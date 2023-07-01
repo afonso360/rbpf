@@ -270,55 +270,44 @@ impl CraneliftCompiler {
                     self.set_dst(bcx, &insn, ext);
                 }
 
-                // // BPF_ST class
-                // ebpf::ST_B_IMM   => unsafe {
-                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u8;
-                //     check_mem_store(x as u64, 1, insn_ptr)?;
-                //     x.write_unaligned(insn.imm as u8);
-                // },
-                // ebpf::ST_H_IMM   => unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u16;
-                //     check_mem_store(x as u64, 2, insn_ptr)?;
-                //     x.write_unaligned(insn.imm as u16);
-                // },
-                // ebpf::ST_W_IMM   => unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u32;
-                //     check_mem_store(x as u64, 4, insn_ptr)?;
-                //     x.write_unaligned(insn.imm as u32);
-                // },
-                // ebpf::ST_DW_IMM  => unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u64;
-                //     check_mem_store(x as u64, 8, insn_ptr)?;
-                //     x.write_unaligned(insn.imm as u64);
-                // },
+                // BPF_ST and BPF_STX class
+                ebpf::ST_B_IMM
+                | ebpf::ST_H_IMM
+                | ebpf::ST_W_IMM
+                | ebpf::ST_DW_IMM
+                | ebpf::ST_B_REG
+                | ebpf::ST_H_REG
+                | ebpf::ST_W_REG
+                | ebpf::ST_DW_REG => {
+                    let ty = match insn.opc {
+                        ebpf::ST_B_IMM | ebpf::ST_B_REG => I8,
+                        ebpf::ST_H_IMM | ebpf::ST_H_REG => I16,
+                        ebpf::ST_W_IMM | ebpf::ST_W_REG => I32,
+                        ebpf::ST_DW_IMM | ebpf::ST_DW_REG => I64,
+                        _ => unreachable!(),
+                    };
+                    let is_imm = match insn.opc {
+                        ebpf::ST_B_IMM | ebpf::ST_H_IMM | ebpf::ST_W_IMM | ebpf::ST_DW_IMM => true,
+                        ebpf::ST_B_REG | ebpf::ST_H_REG | ebpf::ST_W_REG | ebpf::ST_DW_REG => false,
+                        _ => unreachable!(),
+                    };
 
-                // // BPF_STX class
-                // ebpf::ST_B_REG   => unsafe {
-                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u8;
-                //     check_mem_store(x as u64, 1, insn_ptr)?;
-                //     x.write_unaligned(reg[_src] as u8);
-                // },
-                // ebpf::ST_H_REG   => unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u16;
-                //     check_mem_store(x as u64, 2, insn_ptr)?;
-                //     x.write_unaligned(reg[_src] as u16);
-                // },
-                // ebpf::ST_W_REG   => unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u32;
-                //     check_mem_store(x as u64, 4, insn_ptr)?;
-                //     x.write_unaligned(reg[_src] as u32);
-                // },
-                // ebpf::ST_DW_REG  => unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u64;
-                //     check_mem_store(x as u64, 8, insn_ptr)?;
-                //     x.write_unaligned(reg[_src]);
-                // },
+                    let value = if is_imm {
+                        self.insn_imm64(bcx, &insn)
+                    } else {
+                        self.insn_src(bcx, &insn)
+                    };
+
+                    let narrow = if ty != I64 {
+                        bcx.ins().ireduce(ty, value)
+                    } else {
+                        value
+                    };
+
+                    let base = self.insn_dst(bcx, &insn);
+                    self.reg_store(bcx, base, insn.off, narrow);
+                }
+
                 // ebpf::ST_W_XADD  => unimplemented!(),
                 // ebpf::ST_DW_XADD => unimplemented!(),
 
@@ -866,5 +855,13 @@ impl CraneliftCompiler {
         flags.set_endianness(Endianness::Little);
 
         bcx.ins().load(ty, flags, base, offset as i32)
+    }
+    fn reg_store(&mut self, bcx: &mut FunctionBuilder, base: Value, offset: i16, val: Value) {
+        // TODO: Emit bounds checks
+
+        let mut flags = MemFlags::new();
+        flags.set_endianness(Endianness::Little);
+
+        bcx.ins().store(flags, val, base, offset as i32);
     }
 }
