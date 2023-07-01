@@ -441,10 +441,10 @@ impl<'a> EbpfVmMbuff<'a> {
         let ptr = compiler.get_function(func);
 
         let res = ptr(
-            mbuff.as_ptr() as *mut u8,
-            mbuff.len(),
             mem_ptr,
             mem.len(),
+            mbuff.as_ptr() as *mut u8,
+            mbuff.len(),
             0,
             0,
         );
@@ -1130,7 +1130,7 @@ impl<'a> EbpfVmRaw<'a> {
     #[cfg(feature = "cranelift")]
     pub fn execute_cranelift(&self, mem: &'a mut [u8]) -> Result<u64, Error> {
         let mut mbuff = vec![];
-        self.parent.execute_cranelift(&mut [], &mut mbuff)
+        self.parent.execute_cranelift(mem, &mut mbuff)
     }
 }
 

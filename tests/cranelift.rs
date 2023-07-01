@@ -195,72 +195,60 @@ test_cranelift!(
     0xffff8000
 );
 
-// test_cranelift!(
-//     test_cranelift_be16,
-//     "
-//     ldxh r0, [r1]
-//     be16 r0
-//     exit
-//     ",
-//     [0x11, 0x22],
-//     0x1122
-// );
+test_cranelift!(
+    test_cranelift_be16,
+    "
+    ldxh r0, [r1]
+    be16 r0
+    exit
+    ",
+    [0x11, 0x22],
+    0x1122
+);
 
-// #[test]
-// fn test_cranelift_be16_high() {
-//     let prog = assemble("
-//         ldxdw r0, [r1]
-//         be16 r0
-//         exit").unwrap();
-//     let mem = &mut [
-//         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
-//     ];
-//     let mut vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit(mem).unwrap(), 0x1122); }
-// }
+test_cranelift!(
+    test_cranelift_be16_high,
+    "
+    ldxdw r0, [r1]
+    be16 r0
+    exit
+    ",
+    [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+    0x1122
+);
 
-// #[test]
-// fn test_cranelift_be32() {
-//     let prog = assemble("
-//         ldxw r0, [r1]
-//         be32 r0
-//         exit").unwrap();
-//     let mem = &mut [
-//         0x11, 0x22, 0x33, 0x44
-//     ];
-//     let mut vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit(mem).unwrap(), 0x11223344); }
-// }
+test_cranelift!(
+    test_cranelift_be32,
+    "
+    ldxw r0, [r1]
+    be32 r0
+    exit
+    ",
+    [0x11, 0x22, 0x33, 0x44],
+    0x11223344
+);
 
-// #[test]
-// fn test_cranelift_be32_high() {
-//     let prog = assemble("
-//         ldxdw r0, [r1]
-//         be32 r0
-//         exit").unwrap();
-//     let mem = &mut [
-//         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
-//     ];
-//     let mut vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit(mem).unwrap(), 0x11223344); }
-// }
+test_cranelift!(
+    test_cranelift_be32_high,
+    "
+    ldxdw r0, [r1]
+    be32 r0
+    exit
+    ",
+    [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+    0x11223344
+);
 
-// #[test]
-// fn test_cranelift_be64() {
-//     let prog = assemble("
-//         ldxdw r0, [r1]
-//         be64 r0
-//         exit").unwrap();
-//     let mem = &mut [
-//         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
-//     ];
-//     let mut vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit(mem).unwrap(), 0x1122334455667788); }
-// }
+test_cranelift!(
+    test_cranelift_be64,
+    "
+    ldxdw r0, [r1]
+    be64 r0
+    exit
+    ",
+    [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+    0x1122334455667788
+);
 
 // #[test]
 // fn test_cranelift_call() {

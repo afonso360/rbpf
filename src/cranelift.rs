@@ -4,8 +4,9 @@ use cranelift_codegen::{
     entity::EntityRef,
     ir::{
         condcodes::IntCC,
-        types::{I32, I64},
-        AbiParam, Block, Function, InstBuilder, LibCall, Signature, UserFuncName, Value,
+        types::{I16, I32, I64, I8},
+        AbiParam, Block, Endianness, Function, InstBuilder, LibCall, MemFlags, Signature, Type,
+        UserFuncName, Value,
     },
     isa::{CallConv, OwnedTargetIsa},
     settings::{self, Configurable},
@@ -159,10 +160,10 @@ impl CraneliftCompiler {
             // let target_pc = insn_ptr as isize + insn.off as isize + 1;
 
             match insn.opc {
-                // // BPF_LD class
-                // // LD_ABS_* and LD_IND_* are supposed to load pointer to data from metadata buffer.
-                // // Since this pointer is constant, and since we already know it (mem), do not
-                // // bother re-fetching it, just use mem already.
+                // BPF_LD class
+                // LD_ABS_* and LD_IND_* are supposed to load pointer to data from metadata buffer.
+                // Since this pointer is constant, and since we already know it (mem), do not
+                // bother re-fetching it, just use mem already.
                 // ebpf::LD_ABS_B   => reg[0] = unsafe {
                 //     let x = (mem.as_ptr() as u64 + (insn.imm as u32) as u64) as *const u8;
                 //     check_mem_load(x as u64, 8, insn_ptr)?;
@@ -212,31 +213,27 @@ impl CraneliftCompiler {
                     self.set_dst(bcx, &insn, iconst);
                 }
 
-                // // BPF_LDX class
-                // ebpf::LD_B_REG   => reg[_dst] = unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_src] as *const u8).offset(insn.off as isize) as *const u8;
-                //     check_mem_load(x as u64, 1, insn_ptr)?;
-                //     x.read_unaligned() as u64
-                // },
-                // ebpf::LD_H_REG   => reg[_dst] = unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_src] as *const u8).offset(insn.off as isize) as *const u16;
-                //     check_mem_load(x as u64, 2, insn_ptr)?;
-                //     x.read_unaligned() as u64
-                // },
-                // ebpf::LD_W_REG   => reg[_dst] = unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_src] as *const u8).offset(insn.off as isize) as *const u32;
-                //     check_mem_load(x as u64, 4, insn_ptr)?;
-                //     x.read_unaligned() as u64
-                // },
-                // ebpf::LD_DW_REG  => reg[_dst] = unsafe {
-                //     #[allow(clippy::cast_ptr_alignment)]
-                //     let x = (reg[_src] as *const u8).offset(insn.off as isize) as *const u64;
-                //     check_mem_load(x as u64, 8, insn_ptr)?;
-                //     x.read_unaligned()
-                // },
+                // BPF_LDX class
+                ebpf::LD_B_REG | ebpf::LD_H_REG | ebpf::LD_W_REG | ebpf::LD_DW_REG => {
+                    let ty = match insn.opc {
+                        ebpf::LD_B_REG => I8,
+                        ebpf::LD_H_REG => I16,
+                        ebpf::LD_W_REG => I32,
+                        ebpf::LD_DW_REG => I64,
+                        _ => unreachable!(),
+                    };
+
+                    let base = self.insn_src(bcx, &insn);
+                    let loaded = self.reg_load(bcx, ty, base, insn.off);
+
+                    let ext = if ty != I64 {
+                        bcx.ins().uextend(I64, loaded)
+                    } else {
+                        loaded
+                    };
+
+                    self.set_dst(bcx, &insn, ext);
+                }
 
                 // // BPF_ST class
                 // ebpf::ST_B_IMM   => unsafe {
@@ -488,22 +485,39 @@ impl CraneliftCompiler {
                     let res = bcx.ins().sshr(lhs, rhs);
                     self.set_dst32(bcx, &insn, res);
                 }
-                // ebpf::LE         => {
-                //     reg[_dst] = match insn.imm {
-                //         16 => (reg[_dst] as u16).to_le() as u64,
-                //         32 => (reg[_dst] as u32).to_le() as u64,
-                //         64 =>  reg[_dst].to_le(),
-                //         _  => unreachable!(),
-                //     };
-                // },
-                // ebpf::BE         => {
-                //     reg[_dst] = match insn.imm {
-                //         16 => (reg[_dst] as u16).to_be() as u64,
-                //         32 => (reg[_dst] as u32).to_be() as u64,
-                //         64 =>  reg[_dst].to_be(),
-                //         _  => unreachable!(),
-                //     };
-                // },
+
+                ebpf::BE | ebpf::LE => {
+                    let should_swap = match insn.opc {
+                        ebpf::BE => self.isa.endianness() == Endianness::Little,
+                        ebpf::LE => self.isa.endianness() == Endianness::Big,
+                        _ => unreachable!(),
+                    };
+
+                    let ty: Type = match insn.imm {
+                        16 => I16,
+                        32 => I32,
+                        64 => I64,
+                        _ => unreachable!(),
+                    };
+
+                    if should_swap {
+                        let src = self.insn_dst(bcx, &insn);
+                        let src_narrow = if ty != I64 {
+                            bcx.ins().ireduce(ty, src)
+                        } else {
+                            src
+                        };
+
+                        let res = bcx.ins().bswap(src_narrow);
+                        let res_wide = if ty != I64 {
+                            bcx.ins().uextend(I64, res)
+                        } else {
+                            res
+                        };
+
+                        self.set_dst(bcx, &insn, res_wide);
+                    }
+                }
 
                 // BPF_ALU64 class
                 ebpf::ADD64_IMM => {
@@ -800,5 +814,14 @@ impl CraneliftCompiler {
     fn set_dst32(&mut self, bcx: &mut FunctionBuilder, insn: &Insn, val: Value) {
         let val32 = bcx.ins().uextend(I64, val);
         self.set_dst(bcx, insn, val32);
+    }
+
+    fn reg_load(&mut self, bcx: &mut FunctionBuilder, ty: Type, base: Value, offset: i16) -> Value {
+        // TODO: Emit bounds checks
+
+        let mut flags = MemFlags::new();
+        flags.set_endianness(Endianness::Little);
+
+        bcx.ins().load(ty, flags, base, offset as i32)
     }
 }
