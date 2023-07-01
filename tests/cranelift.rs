@@ -263,29 +263,31 @@ fn test_cranelift_call() {
         exit",
     )
     .unwrap();
+
     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
     vm.register_helper(0, helpers::gather_bytes).unwrap();
     assert_eq!(vm.execute_cranelift().unwrap(), 0x0102030405);
 }
 
-// #[test]
-// fn test_cranelift_call_memfrob() {
-//     let prog = assemble("
-//         mov r6, r1
-//         add r1, 2
-//         mov r2, 4
-//         call 1
-//         ldxdw r0, [r6]
-//         be64 r0
-//         exit").unwrap();
-//     let mem = &mut [
-//         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
-//     ];
-//     let mut vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
-//     vm.register_helper(1, helpers::memfrob).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit(mem).unwrap(), 0x102292e2f2c0708); }
-// }
+#[test]
+fn test_cranelift_call_memfrob() {
+    let prog = assemble(
+        "
+        mov r6, r1
+        add r1, 2
+        mov r2, 4
+        call 1
+        ldxdw r0, [r6]
+        be64 r0
+        exit",
+    )
+    .unwrap();
+
+    let mut vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
+    vm.register_helper(1, helpers::memfrob).unwrap();
+    let mem = &mut [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    assert_eq!(vm.execute_cranelift(mem).unwrap(), 0x102292e2f2c0708);
+}
 
 // // TODO: helpers::trash_registers needs asm!().
 // // Try this again once asm!() is available in stable.
@@ -310,193 +312,174 @@ fn test_cranelift_call() {
 //     //unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x4321); }
 // //}
 
-// #[test]
-// fn test_cranelift_div32_high_divisor() {
-//     let prog = assemble("
-//         mov r0, 12
-//         lddw r1, 0x100000004
-//         div32 r0, r1
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x3); }
-// }
+test_cranelift!(
+    test_cranelift_div32_high_divisor,
+    "
+    mov r0, 12
+    lddw r1, 0x100000004
+    div32 r0, r1
+    exit
+    ",
+    0x3
+);
 
-// #[test]
-// fn test_cranelift_div32_imm() {
-//     let prog = assemble("
-//         lddw r0, 0x10000000c
-//         div32 r0, 4
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x3); }
-// }
+test_cranelift!(
+    test_cranelift_div32_imm,
+    "
+    lddw r0, 0x10000000c
+    div32 r0, 4
+    exit
+    ",
+    0x3
+);
 
-// #[test]
-// fn test_cranelift_div32_reg() {
-//     let prog = assemble("
-//         lddw r0, 0x10000000c
-//         mov r1, 4
-//         div32 r0, r1
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x3); }
-// }
+test_cranelift!(
+    test_cranelift_div32_reg,
+    "
+    lddw r0, 0x10000000c
+    mov r1, 4
+    div32 r0, r1
+    exit
+    ",
+    0x3
+);
 
-// #[test]
-// fn test_cranelift_div64_imm() {
-//     let prog = assemble("
-//         mov r0, 0xc
-//         lsh r0, 32
-//         div r0, 4
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x300000000); }
-// }
+test_cranelift!(
+    test_cranelift_div64_imm,
+    "
+    mov r0, 0xc
+    lsh r0, 32
+    div r0, 4
+    exit
+    ",
+    0x300000000
+);
 
-// #[test]
-// fn test_cranelift_div64_reg() {
-//     let prog = assemble("
-//         mov r0, 0xc
-//         lsh r0, 32
-//         mov r1, 4
-//         div r0, r1
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x300000000); }
-// }
+test_cranelift!(
+    test_cranelift_div64_reg,
+    "
+    mov r0, 0xc
+    lsh r0, 32
+    mov r1, 4
+    div r0, r1
+    exit
+    ",
+    0x300000000
+);
 
-// #[test]
-// fn test_cranelift_early_exit() {
-//     let prog = assemble("
-//         mov r0, 3
-//         exit
-//         mov r0, 4
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x3); }
-// }
+// TODO: FIX THIS
+// test_cranelift!(
+//     test_cranelift_early_exit,
+//     "
+//     mov r0, 3
+//     exit
+//     mov r0, 4
+//     exit
+//     ",
+//     0x3
+// );
 
-// // uBPF limits the number of user functions at 64. We don't.
-// //#[test]
-// //fn test_cranelift_err_call_bad_imm() {
-// //}
+// test_cranelift!(
+//     // #[should_panic(expected = "[JIT] Error: unknown helper function (id: 0x3f)")]
+//     test_cranelift_err_call_unreg,
+//     "
+//     mov r1, 1
+//     mov r2, 2
+//     mov r3, 3
+//     mov r4, 4
+//     mov r5, 5
+//     call 63
+//     exit
+//     ",
+//     0x0
+// );
 
-// #[test]
-// #[should_panic(expected = "[JIT] Error: unknown helper function (id: 0x3f)")]
-// fn test_cranelift_err_call_unreg() {
-//     let prog = assemble("
-//         mov r1, 1
-//         mov r2, 2
-//         mov r3, 3
-//         mov r4, 4
-//         mov r5, 5
-//         call 63
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { vm.execute_program_jit().unwrap(); }
-// }
+test_cranelift!(
+    test_cranelift_div64_by_zero_imm,
+    "
+    mov32 r0, 1
+    div r0, 0
+    exit
+    ",
+    0x0
+);
 
-// #[test]
-// fn test_cranelift_div64_by_zero_imm() {
-//     let prog = assemble("
-//         mov32 r0, 1
-//         div r0, 0
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x0); }
-// }
+test_cranelift!(
+    test_cranelift_div_by_zero_imm,
+    "
+    mov32 r0, 1
+    div32 r0, 0
+    exit
+    ",
+    0x0
+);
 
-// #[test]
-// fn test_cranelift_div_by_zero_imm() {
-//     let prog = assemble("
-//         mov32 r0, 1
-//         div32 r0, 0
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x0); }
-// }
+test_cranelift!(
+    test_cranelift_mod64_by_zero_imm,
+    "
+    mov32 r0, 1
+    mod r0, 0
+    exit
+    ",
+    0x1
+);
 
-// #[test]
-// fn test_cranelift_mod64_by_zero_imm() {
-//     let prog = assemble("
-//         mov32 r0, 1
-//         mod r0, 0
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x1); }
-// }
+test_cranelift!(
+    test_cranelift_mod_by_zero_imm,
+    "
+    mov32 r0, 1
+    mod32 r0, 0
+    exit
+    ",
+    0x1
+);
 
-// #[test]
-// fn test_cranelift_mod_by_zero_imm() {
-//     let prog = assemble("
-//         mov32 r0, 1
-//         mod32 r0, 0
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x1); }
-// }
+test_cranelift!(
+    test_cranelift_div64_by_zero_reg,
+    "
+    mov32 r0, 1
+    mov32 r1, 0
+    div r0, r1
+    exit
+    ",
+    0x0
+);
 
-// #[test]
-// fn test_cranelift_div64_by_zero_reg() {
-//     let prog = assemble("
-//         mov32 r0, 1
-//         mov32 r1, 0
-//         div r0, r1
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x0); }
-// }
+test_cranelift!(
+    test_cranelift_div_by_zero_reg,
+    "
+    mov32 r0, 1
+    mov32 r1, 0
+    div32 r0, r1
+    exit
+    ",
+    0x0
+);
 
-// #[test]
-// fn test_cranelift_div_by_zero_reg() {
-//     let prog = assemble("
-//         mov32 r0, 1
-//         mov32 r1, 0
-//         div32 r0, r1
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x0); }
-// }
+test_cranelift!(
+    test_cranelift_mod64_by_zero_reg,
+    "
+    mov32 r0, 1
+    mov32 r1, 0
+    mod r0, r1
+    exit
+    ",
+    0x1
+);
 
-// #[test]
-// fn test_cranelift_mod64_by_zero_reg() {
-//     let prog = assemble("
-//         mov32 r0, 1
-//         mov32 r1, 0
-//         mod r0, r1
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x1); }
-// }
-
-// #[test]
-// fn test_cranelift_mod_by_zero_reg() {
-//     let prog = assemble("
-//         mov32 r0, 1
-//         mov32 r1, 0
-//         mod32 r0, r1
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x1); }
-// }
+test_cranelift!(
+    test_cranelift_mod_by_zero_reg,
+    "
+    mov32 r0, 1
+    mov32 r1, 0
+    mod32 r0, r1
+    exit
+    ",
+    0x1
+);
 
 // // TODO SKIP: JIT disabled for this testcase (stack oob check not implemented)
-// // #[test]
+//
 // // #[should_panic(expected = "Error: out of bounds memory store (insn #1)")]
 // // fn test_cranelift_err_stack_out_of_bound() {
 // //     let prog = &[
@@ -508,15 +491,14 @@ fn test_cranelift_call() {
 // //     unsafe { vm.execute_program_jit().unwrap(); }
 // // }
 
-// #[test]
-// fn test_cranelift_exit() {
-//     let prog = assemble("
-//         mov r0, 0
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x0); }
-// }
+test_cranelift!(
+    test_cranelift_exit,
+    "
+    mov r0, 0
+    exit
+    ",
+    0x0
+);
 
 // #[test]
 // fn test_cranelift_ja() {

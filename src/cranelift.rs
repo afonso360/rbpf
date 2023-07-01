@@ -189,7 +189,6 @@ impl CraneliftCompiler {
         let mut insn_ptr: usize = 0;
         while insn_ptr * ebpf::INSN_SIZE < prog.len() {
             let insn = ebpf::get_insn(prog, insn_ptr);
-            println!("Translating: {:?}", insn);
 
             // self.pc_locs[insn_ptr] = mem.offset;
 
@@ -460,14 +459,12 @@ impl CraneliftCompiler {
                 ebpf::MOD32_IMM => {
                     // reg[_dst] = (reg[_dst] as u32             % insn.imm  as u32) as u64,
 
-                    let res = if insn.imm == 0 {
-                        bcx.ins().iconst(I32, 0)
-                    } else {
+                    if insn.imm != 0 {
                         let imm = self.insn_imm32(bcx, &insn);
                         let src = self.insn_dst32(bcx, &insn);
-                        bcx.ins().urem(src, imm)
-                    };
-                    self.set_dst32(bcx, &insn, res);
+                        let res = bcx.ins().urem(src, imm);
+                        self.set_dst32(bcx, &insn, res);
+                    }
                 }
                 ebpf::MOD32_REG => {
                     // reg[_dst] = (reg[_dst] as u32 % reg[_src]             as u32) as u64,
@@ -481,7 +478,7 @@ impl CraneliftCompiler {
                     let safe_rhs = bcx.ins().select(rhs_is_zero, one, rhs);
                     let div_res = bcx.ins().urem(lhs, safe_rhs);
 
-                    let res = bcx.ins().select(rhs_is_zero, zero, div_res);
+                    let res = bcx.ins().select(rhs_is_zero, lhs, div_res);
                     self.set_dst32(bcx, &insn, res);
                 }
                 ebpf::XOR32_IMM => {
@@ -627,18 +624,17 @@ impl CraneliftCompiler {
                 }
                 ebpf::MOD64_IMM => {
                     // reg[_dst] %= insn.imm as u64,
-                    let res = if insn.imm == 0 {
-                        bcx.ins().iconst(I64, 0)
-                    } else {
+
+                    if insn.imm != 0 {
                         let imm = self.insn_imm64(bcx, &insn);
                         let src = self.insn_dst(bcx, &insn);
-                        bcx.ins().urem(src, imm)
+                        let res = bcx.ins().urem(src, imm);
+                        self.set_dst(bcx, &insn, res);
                     };
-                    self.set_dst(bcx, &insn, res);
                 }
                 ebpf::MOD64_REG => {
                     // reg[_dst] %= reg[_src], if reg[_src] != 0
-                    // reg[_dst] = 0, if reg[_src] == 0
+
                     let zero = bcx.ins().iconst(I64, 0);
                     let one = bcx.ins().iconst(I64, 1);
 
@@ -649,7 +645,7 @@ impl CraneliftCompiler {
                     let safe_rhs = bcx.ins().select(rhs_is_zero, one, rhs);
                     let div_res = bcx.ins().urem(lhs, safe_rhs);
 
-                    let res = bcx.ins().select(rhs_is_zero, zero, div_res);
+                    let res = bcx.ins().select(rhs_is_zero, lhs, div_res);
                     self.set_dst(bcx, &insn, res);
                 }
                 ebpf::OR64_IMM => {
