@@ -240,8 +240,8 @@ impl CraneliftCompiler {
                 //     x.read_unaligned()
                 // },
                 ebpf::LD_DW_IMM => {
-                    let next_insn = ebpf::get_insn(prog, insn_ptr);
                     insn_ptr += 1;
+                    let next_insn = ebpf::get_insn(prog, insn_ptr);
 
                     let imm = (((insn.imm as u32) as u64) + ((next_insn.imm as u64) << 32)) as i64;
                     let iconst = bcx.ins().iconst(I64, imm);
