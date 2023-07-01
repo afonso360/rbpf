@@ -1,0 +1,786 @@
+use std::convert::TryInto;
+
+use cranelift_codegen::{
+    entity::EntityRef,
+    ir::{
+        condcodes::IntCC,
+        types::{I32, I64},
+        AbiParam, Function, InstBuilder, LibCall, Signature, UserFuncName, Value,
+    },
+    isa::{CallConv, OwnedTargetIsa},
+    settings::{self, Configurable},
+    Context,
+};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{FuncId, Linkage, Module};
+
+use crate::ebpf::{self, Insn};
+
+use super::Error;
+
+fn libcall_names(libcall: LibCall) -> String {
+    match libcall {
+        _ => unimplemented!(),
+    }
+}
+
+pub type JittedFunction = extern "C" fn(
+    *mut u8, // mbuff.as_ptr() as *mut u8,
+    usize,   // mbuff.len(),
+    *mut u8, // mem_ptr,
+    usize,   // mem.len(),
+    usize,   // 0,
+    usize,   // 0,
+) -> u64;
+
+pub(crate) struct CraneliftCompiler {
+    isa: OwnedTargetIsa,
+    module: JITModule,
+
+    /// Map of register numbers to Cranelift variables.
+    registers: [Variable; 16],
+}
+
+impl CraneliftCompiler {
+    pub(crate) fn new() -> Self {
+        let mut flag_builder = settings::builder();
+        flag_builder.set("opt_level", "speed").unwrap();
+
+        let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
+            panic!("host machine is not supported: {}", msg);
+        });
+        let isa = isa_builder
+            .finish(settings::Flags::new(flag_builder))
+            .unwrap();
+        let mut module = JITModule::new(JITBuilder::with_isa(isa.clone(), Box::new(libcall_names)));
+
+        let registers = (0..16)
+            .map(|i| Variable::new(i))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+
+        Self {
+            isa,
+            module,
+            registers,
+        }
+    }
+
+    pub(crate) fn get_function(&mut self, id: FuncId) -> JittedFunction {
+        let function_ptr = self.module.get_finalized_function(id);
+
+        unsafe { std::mem::transmute(function_ptr) }
+    }
+
+    pub(crate) fn compile_function(&mut self, prog: &[u8]) -> Result<FuncId, Error> {
+        let name = "main";
+        let sig = Signature {
+            params: vec![
+                AbiParam::new(I64),
+                AbiParam::new(I64),
+                AbiParam::new(I64),
+                AbiParam::new(I64),
+                AbiParam::new(I64),
+                AbiParam::new(I64),
+            ],
+            returns: vec![AbiParam::new(I64)],
+            call_conv: CallConv::SystemV,
+        };
+
+        let func_id = self
+            .module
+            .declare_function(name, Linkage::Local, &sig)
+            .unwrap();
+
+        let mut ctx = Context::new();
+        ctx.func = Function::with_name_signature(UserFuncName::testcase(name.as_bytes()), sig);
+        let mut func_ctx = FunctionBuilderContext::new();
+
+        {
+            let mut builder: FunctionBuilder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+
+            // Register the VM registers as variables
+            for var in self.registers.iter() {
+                builder.declare_var(*var, I64);
+            }
+
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+
+            self.translate_program(&mut builder, prog)?;
+
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+
+        // println!("Before Opts: {}", ctx.func.display());
+
+        ctx.verify(&*self.isa).unwrap();
+        ctx.optimize(&*self.isa).unwrap();
+
+        println!("After Opts: {}", ctx.func.display());
+
+        self.module.define_function(func_id, &mut ctx).unwrap();
+        self.module.finalize_definitions().unwrap();
+        // ctx.clear();
+
+        Ok(func_id)
+    }
+
+    fn translate_program(&mut self, bcx: &mut FunctionBuilder, prog: &[u8]) -> Result<(), Error> {
+        let mut insn_ptr: usize = 0;
+        while insn_ptr * ebpf::INSN_SIZE < prog.len() {
+            let insn = ebpf::get_insn(prog, insn_ptr);
+            println!("Translating: {:?}", insn);
+
+            // self.pc_locs[insn_ptr] = mem.offset;
+
+            // let target_pc = insn_ptr as isize + insn.off as isize + 1;
+
+            match insn.opc {
+                // // BPF_LD class
+                // // LD_ABS_* and LD_IND_* are supposed to load pointer to data from metadata buffer.
+                // // Since this pointer is constant, and since we already know it (mem), do not
+                // // bother re-fetching it, just use mem already.
+                // ebpf::LD_ABS_B   => reg[0] = unsafe {
+                //     let x = (mem.as_ptr() as u64 + (insn.imm as u32) as u64) as *const u8;
+                //     check_mem_load(x as u64, 8, insn_ptr)?;
+                //     x.read_unaligned() as u64
+                // },
+                // ebpf::LD_ABS_H   => reg[0] = unsafe {
+                //     let x = (mem.as_ptr() as u64 + (insn.imm as u32) as u64) as *const u16;
+                //     check_mem_load(x as u64, 8, insn_ptr)?;
+                //     x.read_unaligned() as u64
+                // },
+                // ebpf::LD_ABS_W   => reg[0] = unsafe {
+                //     let x = (mem.as_ptr() as u64 + (insn.imm as u32) as u64) as *const u32;
+                //     check_mem_load(x as u64, 8, insn_ptr)?;
+                //     x.read_unaligned() as u64
+                // },
+                // ebpf::LD_ABS_DW  => reg[0] = unsafe {
+                //     let x = (mem.as_ptr() as u64 + (insn.imm as u32) as u64) as *const u64;
+                //     check_mem_load(x as u64, 8, insn_ptr)?;
+                //     x.read_unaligned()
+                // },
+                // ebpf::LD_IND_B   => reg[0] = unsafe {
+                //     let x = (mem.as_ptr() as u64 + reg[_src] + (insn.imm as u32) as u64) as *const u8;
+                //     check_mem_load(x as u64, 8, insn_ptr)?;
+                //     x.read_unaligned() as u64
+                // },
+                // ebpf::LD_IND_H   => reg[0] = unsafe {
+                //     let x = (mem.as_ptr() as u64 + reg[_src] + (insn.imm as u32) as u64) as *const u16;
+                //     check_mem_load(x as u64, 8, insn_ptr)?;
+                //     x.read_unaligned() as u64
+                // },
+                // ebpf::LD_IND_W   => reg[0] = unsafe {
+                //     let x = (mem.as_ptr() as u64 + reg[_src] + (insn.imm as u32) as u64) as *const u32;
+                //     check_mem_load(x as u64, 8, insn_ptr)?;
+                //     x.read_unaligned() as u64
+                // },
+                // ebpf::LD_IND_DW  => reg[0] = unsafe {
+                //     let x = (mem.as_ptr() as u64 + reg[_src] + (insn.imm as u32) as u64) as *const u64;
+                //     check_mem_load(x as u64, 8, insn_ptr)?;
+                //     x.read_unaligned()
+                // },
+                ebpf::LD_DW_IMM => {
+                    let next_insn = ebpf::get_insn(prog, insn_ptr);
+                    insn_ptr += 1;
+
+                    let imm = (((insn.imm as u32) as u64) + ((next_insn.imm as u64) << 32)) as i64;
+                    let iconst = bcx.ins().iconst(I64, imm);
+                    self.set_dst(bcx, &insn, iconst);
+                }
+
+                // // BPF_LDX class
+                // ebpf::LD_B_REG   => reg[_dst] = unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_src] as *const u8).offset(insn.off as isize) as *const u8;
+                //     check_mem_load(x as u64, 1, insn_ptr)?;
+                //     x.read_unaligned() as u64
+                // },
+                // ebpf::LD_H_REG   => reg[_dst] = unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_src] as *const u8).offset(insn.off as isize) as *const u16;
+                //     check_mem_load(x as u64, 2, insn_ptr)?;
+                //     x.read_unaligned() as u64
+                // },
+                // ebpf::LD_W_REG   => reg[_dst] = unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_src] as *const u8).offset(insn.off as isize) as *const u32;
+                //     check_mem_load(x as u64, 4, insn_ptr)?;
+                //     x.read_unaligned() as u64
+                // },
+                // ebpf::LD_DW_REG  => reg[_dst] = unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_src] as *const u8).offset(insn.off as isize) as *const u64;
+                //     check_mem_load(x as u64, 8, insn_ptr)?;
+                //     x.read_unaligned()
+                // },
+
+                // // BPF_ST class
+                // ebpf::ST_B_IMM   => unsafe {
+                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u8;
+                //     check_mem_store(x as u64, 1, insn_ptr)?;
+                //     x.write_unaligned(insn.imm as u8);
+                // },
+                // ebpf::ST_H_IMM   => unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u16;
+                //     check_mem_store(x as u64, 2, insn_ptr)?;
+                //     x.write_unaligned(insn.imm as u16);
+                // },
+                // ebpf::ST_W_IMM   => unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u32;
+                //     check_mem_store(x as u64, 4, insn_ptr)?;
+                //     x.write_unaligned(insn.imm as u32);
+                // },
+                // ebpf::ST_DW_IMM  => unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u64;
+                //     check_mem_store(x as u64, 8, insn_ptr)?;
+                //     x.write_unaligned(insn.imm as u64);
+                // },
+
+                // // BPF_STX class
+                // ebpf::ST_B_REG   => unsafe {
+                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u8;
+                //     check_mem_store(x as u64, 1, insn_ptr)?;
+                //     x.write_unaligned(reg[_src] as u8);
+                // },
+                // ebpf::ST_H_REG   => unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u16;
+                //     check_mem_store(x as u64, 2, insn_ptr)?;
+                //     x.write_unaligned(reg[_src] as u16);
+                // },
+                // ebpf::ST_W_REG   => unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u32;
+                //     check_mem_store(x as u64, 4, insn_ptr)?;
+                //     x.write_unaligned(reg[_src] as u32);
+                // },
+                // ebpf::ST_DW_REG  => unsafe {
+                //     #[allow(clippy::cast_ptr_alignment)]
+                //     let x = (reg[_dst] as *const u8).offset(insn.off as isize) as *mut u64;
+                //     check_mem_store(x as u64, 8, insn_ptr)?;
+                //     x.write_unaligned(reg[_src]);
+                // },
+                // ebpf::ST_W_XADD  => unimplemented!(),
+                // ebpf::ST_DW_XADD => unimplemented!(),
+
+                // BPF_ALU class
+                // TODO Check how overflow works in kernel. Should we &= U32MAX all src register value
+                // before we do the operation?
+                // Cf ((0x11 << 32) - (0x1 << 32)) as u32 VS ((0x11 << 32) as u32 - (0x1 << 32) as u32
+                ebpf::ADD32_IMM => {
+                    let src = self.insn_dst32(bcx, &insn);
+                    let imm = self.insn_imm32(bcx, &insn);
+                    let res = bcx.ins().iadd(src, imm);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::ADD32_REG => {
+                    //((reg[_dst] & U32MAX) + (reg[_src] & U32MAX)) & U32MAX,
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+                    let res = bcx.ins().iadd(lhs, rhs);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::SUB32_IMM => {
+                    // reg[_dst] = (reg[_dst] as i32).wrapping_sub(insn.imm)         as u64,
+                    let src = self.insn_dst32(bcx, &insn);
+                    let imm = self.insn_imm32(bcx, &insn);
+                    let res = bcx.ins().isub(src, imm);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::SUB32_REG => {
+                    // reg[_dst] = (reg[_dst] as i32).wrapping_sub(reg[_src] as i32) as u64,
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+                    let res = bcx.ins().isub(lhs, rhs);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::MUL32_IMM => {
+                    // reg[_dst] = (reg[_dst] as i32).wrapping_mul(insn.imm)         as u64,
+                    let src = self.insn_dst32(bcx, &insn);
+                    let imm = self.insn_imm32(bcx, &insn);
+                    let res = bcx.ins().imul(src, imm);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::MUL32_REG => {
+                    // reg[_dst] = (reg[_dst] as i32).wrapping_mul(reg[_src] as i32) as u64,
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+                    let res = bcx.ins().imul(lhs, rhs);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::DIV32_IMM => {
+                    // reg[_dst] = (reg[_dst] as u32 / insn.imm              as u32) as u64,
+                    let res = if insn.imm == 0 {
+                        bcx.ins().iconst(I32, 0)
+                    } else {
+                        let imm = self.insn_imm32(bcx, &insn);
+                        let src = self.insn_dst32(bcx, &insn);
+                        bcx.ins().udiv(src, imm)
+                    };
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::DIV32_REG => {
+                    // reg[_dst] = (reg[_dst] as u32 / reg[_src]             as u32) as u64,
+                    let zero = bcx.ins().iconst(I32, 0);
+                    let one = bcx.ins().iconst(I32, 1);
+
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+
+                    let rhs_is_zero = bcx.ins().icmp(IntCC::Equal, rhs, zero);
+                    let safe_rhs = bcx.ins().select(rhs_is_zero, one, rhs);
+                    let div_res = bcx.ins().udiv(lhs, safe_rhs);
+
+                    let res = bcx.ins().select(rhs_is_zero, zero, div_res);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::OR32_IMM => {
+                    // reg[_dst] = (reg[_dst] as u32             | insn.imm  as u32) as u64,
+                    let src = self.insn_dst32(bcx, &insn);
+                    let imm = self.insn_imm32(bcx, &insn);
+                    let res = bcx.ins().bor(src, imm);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::OR32_REG => {
+                    // reg[_dst] = (reg[_dst] as u32             | reg[_src] as u32) as u64,
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+                    let res = bcx.ins().bor(lhs, rhs);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::AND32_IMM => {
+                    // reg[_dst] = (reg[_dst] as u32             & insn.imm  as u32) as u64,
+                    let src = self.insn_dst32(bcx, &insn);
+                    let imm = self.insn_imm32(bcx, &insn);
+                    let res = bcx.ins().band(src, imm);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::AND32_REG => {
+                    // reg[_dst] = (reg[_dst] as u32             & reg[_src] as u32) as u64,
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+                    let res = bcx.ins().band(lhs, rhs);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::LSH32_IMM => {
+                    // reg[_dst] = (reg[_dst] as u32).wrapping_shl(insn.imm  as u32) as u64,
+                    let src = self.insn_dst32(bcx, &insn);
+                    let imm = self.insn_imm32(bcx, &insn);
+                    let res = bcx.ins().ishl(src, imm);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::LSH32_REG => {
+                    // reg[_dst] = (reg[_dst] as u32).wrapping_shl(reg[_src] as u32) as u64,
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+                    let res = bcx.ins().ishl(lhs, rhs);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::RSH32_IMM => {
+                    // reg[_dst] = (reg[_dst] as u32).wrapping_shr(insn.imm  as u32) as u64,
+                    let src = self.insn_dst32(bcx, &insn);
+                    let imm = self.insn_imm32(bcx, &insn);
+                    let res = bcx.ins().ushr(src, imm);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::RSH32_REG => {
+                    // reg[_dst] = (reg[_dst] as u32).wrapping_shr(reg[_src] as u32) as u64,
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+                    let res = bcx.ins().ushr(lhs, rhs);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::NEG32 => {
+                    // { reg[_dst] = (reg[_dst] as i32).wrapping_neg()                 as u64; reg[_dst] &= U32MAX; },
+                    let src = self.insn_dst32(bcx, &insn);
+                    let res = bcx.ins().ineg(src);
+                    // TODO: Do we need to mask the result?
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::MOD32_IMM => {
+                    // reg[_dst] = (reg[_dst] as u32             % insn.imm  as u32) as u64,
+
+                    let res = if insn.imm == 0 {
+                        bcx.ins().iconst(I32, 0)
+                    } else {
+                        let imm = self.insn_imm32(bcx, &insn);
+                        let src = self.insn_dst32(bcx, &insn);
+                        bcx.ins().urem(src, imm)
+                    };
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::MOD32_REG => {
+                    // reg[_dst] = (reg[_dst] as u32 % reg[_src]             as u32) as u64,
+                    let zero = bcx.ins().iconst(I32, 0);
+                    let one = bcx.ins().iconst(I32, 1);
+
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+
+                    let rhs_is_zero = bcx.ins().icmp(IntCC::Equal, rhs, zero);
+                    let safe_rhs = bcx.ins().select(rhs_is_zero, one, rhs);
+                    let div_res = bcx.ins().urem(lhs, safe_rhs);
+
+                    let res = bcx.ins().select(rhs_is_zero, zero, div_res);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::XOR32_IMM => {
+                    // reg[_dst] = (reg[_dst] as u32             ^ insn.imm  as u32) as u64,
+                    let src = self.insn_dst32(bcx, &insn);
+                    let imm = self.insn_imm32(bcx, &insn);
+                    let res = bcx.ins().bxor(src, imm);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::XOR32_REG => {
+                    // reg[_dst] = (reg[_dst] as u32             ^ reg[_src] as u32) as u64,
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+                    let res = bcx.ins().bxor(lhs, rhs);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::MOV32_IMM => {
+                    let imm = self.insn_imm32(bcx, &insn);
+                    self.set_dst32(bcx, &insn, imm);
+                }
+                ebpf::MOV32_REG => {
+                    // reg[_dst] = (reg[_src] as u32)                                as u64,
+                    let src = self.insn_src32(bcx, &insn);
+                    self.set_dst32(bcx, &insn, src);
+                }
+                ebpf::ARSH32_IMM => {
+                    // { reg[_dst] = (reg[_dst] as i32).wrapping_shr(insn.imm  as u32) as u64; reg[_dst] &= U32MAX; },
+                    let src = self.insn_dst32(bcx, &insn);
+                    let imm = self.insn_imm32(bcx, &insn);
+                    let res = bcx.ins().sshr(src, imm);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                ebpf::ARSH32_REG => {
+                    // { reg[_dst] = (reg[_dst] as i32).wrapping_shr(reg[_src] as u32) as u64; reg[_dst] &= U32MAX; },
+                    let lhs = self.insn_dst32(bcx, &insn);
+                    let rhs = self.insn_src32(bcx, &insn);
+                    let res = bcx.ins().sshr(lhs, rhs);
+                    self.set_dst32(bcx, &insn, res);
+                }
+                // ebpf::LE         => {
+                //     reg[_dst] = match insn.imm {
+                //         16 => (reg[_dst] as u16).to_le() as u64,
+                //         32 => (reg[_dst] as u32).to_le() as u64,
+                //         64 =>  reg[_dst].to_le(),
+                //         _  => unreachable!(),
+                //     };
+                // },
+                // ebpf::BE         => {
+                //     reg[_dst] = match insn.imm {
+                //         16 => (reg[_dst] as u16).to_be() as u64,
+                //         32 => (reg[_dst] as u32).to_be() as u64,
+                //         64 =>  reg[_dst].to_be(),
+                //         _  => unreachable!(),
+                //     };
+                // },
+
+                // BPF_ALU64 class
+                ebpf::ADD64_IMM => {
+                    // reg[_dst] = reg[_dst].wrapping_add(insn.imm as u64),
+                    let imm = self.insn_imm64(bcx, &insn);
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().iadd(src, imm);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::ADD64_REG => {
+                    // reg[_dst] = reg[_dst].wrapping_add(reg[_src]),
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+                    let res = bcx.ins().iadd(lhs, rhs);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::SUB64_IMM => {
+                    // reg[_dst] = reg[_dst].wrapping_sub(insn.imm as u64),
+                    let imm = self.insn_imm64(bcx, &insn);
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().isub(src, imm);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::SUB64_REG => {
+                    // reg[_dst] = reg[_dst].wrapping_sub(reg[_src]),
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+                    let res = bcx.ins().isub(lhs, rhs);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::MUL64_IMM => {
+                    // reg[_dst] = reg[_dst].wrapping_mul(insn.imm as u64),
+                    let imm = self.insn_imm64(bcx, &insn);
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().imul(src, imm);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::MUL64_REG => {
+                    // reg[_dst] = reg[_dst].wrapping_mul(reg[_src]),
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+                    let res = bcx.ins().imul(lhs, rhs);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::DIV64_IMM => {
+                    // reg[_dst] /= insn.imm as u64,
+                    let res = if insn.imm == 0 {
+                        bcx.ins().iconst(I64, 0)
+                    } else {
+                        let imm = self.insn_imm64(bcx, &insn);
+                        let src = self.insn_dst(bcx, &insn);
+                        bcx.ins().udiv(src, imm)
+                    };
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::DIV64_REG => {
+                    // reg[_dst] /= reg[_src], if reg[_src] != 0
+                    // reg[_dst] = 0, if reg[_src] == 0
+                    let zero = bcx.ins().iconst(I64, 0);
+                    let one = bcx.ins().iconst(I64, 1);
+
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+
+                    let rhs_is_zero = bcx.ins().icmp(IntCC::Equal, rhs, zero);
+                    let safe_rhs = bcx.ins().select(rhs_is_zero, one, rhs);
+                    let div_res = bcx.ins().udiv(lhs, safe_rhs);
+
+                    let res = bcx.ins().select(rhs_is_zero, zero, div_res);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::MOD64_IMM => {
+                    // reg[_dst] %= insn.imm as u64,
+                    let res = if insn.imm == 0 {
+                        bcx.ins().iconst(I64, 0)
+                    } else {
+                        let imm = self.insn_imm64(bcx, &insn);
+                        let src = self.insn_dst(bcx, &insn);
+                        bcx.ins().urem(src, imm)
+                    };
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::MOD64_REG => {
+                    // reg[_dst] %= reg[_src], if reg[_src] != 0
+                    // reg[_dst] = 0, if reg[_src] == 0
+                    let zero = bcx.ins().iconst(I64, 0);
+                    let one = bcx.ins().iconst(I64, 1);
+
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+
+                    let rhs_is_zero = bcx.ins().icmp(IntCC::Equal, rhs, zero);
+                    let safe_rhs = bcx.ins().select(rhs_is_zero, one, rhs);
+                    let div_res = bcx.ins().urem(lhs, safe_rhs);
+
+                    let res = bcx.ins().select(rhs_is_zero, zero, div_res);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::OR64_IMM => {
+                    // reg[_dst] |= insn.imm as u64,
+                    let imm = self.insn_imm64(bcx, &insn);
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().bor(src, imm);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::OR64_REG => {
+                    // reg[_dst] |= reg[_src],
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+                    let res = bcx.ins().bor(lhs, rhs);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::AND64_IMM => {
+                    // reg[_dst] &= insn.imm as u64,
+                    let imm = self.insn_imm64(bcx, &insn);
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().band(src, imm);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::AND64_REG => {
+                    // reg[_dst] &= reg[_src],
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+                    let res = bcx.ins().band(lhs, rhs);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::LSH64_IMM => {
+                    // reg[_dst] <<= insn.imm as u64,
+                    let imm = self.insn_imm64(bcx, &insn);
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().ishl(src, imm);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::LSH64_REG => {
+                    // reg[_dst] <<= reg[_src],
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+                    let res = bcx.ins().ishl(lhs, rhs);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::RSH64_IMM => {
+                    // reg[_dst] >>= insn.imm as u64,
+                    let imm = self.insn_imm64(bcx, &insn);
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().ushr(src, imm);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::RSH64_REG => {
+                    // reg[_dst] >>= reg[_src],
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+                    let res = bcx.ins().ushr(lhs, rhs);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::NEG64 => {
+                    // reg[_dst] = -(reg[_dst] as i64) as u64,
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().ineg(src);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::XOR64_IMM => {
+                    // reg[_dst] ^= insn.imm as u64,
+                    let imm = self.insn_imm64(bcx, &insn);
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().bxor(src, imm);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::XOR64_REG => {
+                    // reg[_dst] ^= reg[_src],
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+                    let res = bcx.ins().bxor(lhs, rhs);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::MOV64_IMM => {
+                    // reg[_dst] = insn.imm as u64,
+                    let imm = self.insn_imm64(bcx, &insn);
+                    bcx.def_var(self.registers[insn.dst as usize], imm);
+                }
+                ebpf::MOV64_REG => {
+                    // reg[_dst] = reg[_src],
+                    let src = self.insn_src(bcx, &insn);
+                    bcx.def_var(self.registers[insn.dst as usize], src);
+                }
+                ebpf::ARSH64_IMM => {
+                    // reg[_dst] = (reg[_dst] as i64 >> insn.imm) as u64,
+                    let imm = self.insn_imm64(bcx, &insn);
+                    let src = self.insn_dst(bcx, &insn);
+                    let res = bcx.ins().sshr(src, imm);
+                    self.set_dst(bcx, &insn, res);
+                }
+                ebpf::ARSH64_REG => {
+                    // reg[_dst] = (reg[_dst] as i64 >> reg[_src]) as u64,
+                    let lhs = self.insn_dst(bcx, &insn);
+                    let rhs = self.insn_src(bcx, &insn);
+                    let res = bcx.ins().sshr(lhs, rhs);
+                    self.set_dst(bcx, &insn, res);
+                }
+
+                // BPF_JMP class
+                // // TODO: check this actually works as expected for signed / unsigned ops
+                // ebpf::JA         =>                                             do_jump(),
+                // ebpf::JEQ_IMM    => if  reg[_dst] == insn.imm as u64          { do_jump(); },
+                // ebpf::JEQ_REG    => if  reg[_dst] == reg[_src]                { do_jump(); },
+                // ebpf::JGT_IMM    => if  reg[_dst] >  insn.imm as u64          { do_jump(); },
+                // ebpf::JGT_REG    => if  reg[_dst] >  reg[_src]                { do_jump(); },
+                // ebpf::JGE_IMM    => if  reg[_dst] >= insn.imm as u64          { do_jump(); },
+                // ebpf::JGE_REG    => if  reg[_dst] >= reg[_src]                { do_jump(); },
+                // ebpf::JLT_IMM    => if  reg[_dst] <  insn.imm as u64          { do_jump(); },
+                // ebpf::JLT_REG    => if  reg[_dst] <  reg[_src]                { do_jump(); },
+                // ebpf::JLE_IMM    => if  reg[_dst] <= insn.imm as u64          { do_jump(); },
+                // ebpf::JLE_REG    => if  reg[_dst] <= reg[_src]                { do_jump(); },
+                // ebpf::JSET_IMM   => if  reg[_dst] &  insn.imm as u64 != 0     { do_jump(); },
+                // ebpf::JSET_REG   => if  reg[_dst] &  reg[_src]       != 0     { do_jump(); },
+                // ebpf::JNE_IMM    => if  reg[_dst] != insn.imm as u64          { do_jump(); },
+                // ebpf::JNE_REG    => if  reg[_dst] != reg[_src]                { do_jump(); },
+                // ebpf::JSGT_IMM   => if  reg[_dst] as i64  >  insn.imm  as i64 { do_jump(); },
+                // ebpf::JSGT_REG   => if  reg[_dst] as i64  >  reg[_src] as i64 { do_jump(); },
+                // ebpf::JSGE_IMM   => if  reg[_dst] as i64  >= insn.imm  as i64 { do_jump(); },
+                // ebpf::JSGE_REG   => if  reg[_dst] as i64  >= reg[_src] as i64 { do_jump(); },
+                // ebpf::JSLT_IMM   => if (reg[_dst] as i64) <  insn.imm  as i64 { do_jump(); },
+                // ebpf::JSLT_REG   => if (reg[_dst] as i64) <  reg[_src] as i64 { do_jump(); },
+                // ebpf::JSLE_IMM   => if  reg[_dst] as i64  <= insn.imm  as i64 { do_jump(); },
+                // ebpf::JSLE_REG   => if  reg[_dst] as i64  <= reg[_src] as i64 { do_jump(); },
+
+                // BPF_JMP32 class
+                // ebpf::JEQ_IMM32  => if  reg[_dst] as u32  == insn.imm  as u32      { do_jump(); },
+                // ebpf::JEQ_REG32  => if  reg[_dst] as u32  == reg[_src] as u32      { do_jump(); },
+                // ebpf::JGT_IMM32  => if  reg[_dst] as u32  >  insn.imm  as u32      { do_jump(); },
+                // ebpf::JGT_REG32  => if  reg[_dst] as u32  >  reg[_src] as u32      { do_jump(); },
+                // ebpf::JGE_IMM32  => if  reg[_dst] as u32  >= insn.imm  as u32      { do_jump(); },
+                // ebpf::JGE_REG32  => if  reg[_dst] as u32  >= reg[_src] as u32      { do_jump(); },
+                // ebpf::JLT_IMM32  => if (reg[_dst] as u32) <  insn.imm  as u32      { do_jump(); },
+                // ebpf::JLT_REG32  => if (reg[_dst] as u32) <  reg[_src] as u32      { do_jump(); },
+                // ebpf::JLE_IMM32  => if  reg[_dst] as u32  <= insn.imm  as u32      { do_jump(); },
+                // ebpf::JLE_REG32  => if  reg[_dst] as u32  <= reg[_src] as u32      { do_jump(); },
+                // ebpf::JSET_IMM32 => if  reg[_dst] as u32  &  insn.imm  as u32 != 0 { do_jump(); },
+                // ebpf::JSET_REG32 => if  reg[_dst] as u32  &  reg[_src] as u32 != 0 { do_jump(); },
+                // ebpf::JNE_IMM32  => if  reg[_dst] as u32  != insn.imm  as u32      { do_jump(); },
+                // ebpf::JNE_REG32  => if  reg[_dst] as u32  != reg[_src] as u32      { do_jump(); },
+                // ebpf::JSGT_IMM32 => if  reg[_dst] as i32  >  insn.imm              { do_jump(); },
+                // ebpf::JSGT_REG32 => if  reg[_dst] as i32  >  reg[_src] as i32      { do_jump(); },
+                // ebpf::JSGE_IMM32 => if  reg[_dst] as i32  >= insn.imm              { do_jump(); },
+                // ebpf::JSGE_REG32 => if  reg[_dst] as i32  >= reg[_src] as i32      { do_jump(); },
+                // ebpf::JSLT_IMM32 => if (reg[_dst] as i32) <  insn.imm              { do_jump(); },
+                // ebpf::JSLT_REG32 => if (reg[_dst] as i32) <  reg[_src] as i32      { do_jump(); },
+                // ebpf::JSLE_IMM32 => if  reg[_dst] as i32  <= insn.imm              { do_jump(); },
+                // ebpf::JSLE_REG32 => if  reg[_dst] as i32  <= reg[_src] as i32      { do_jump(); },
+
+                // Do not delegate the check to the verifier, since registered functions can be
+                // changed after the program has been verified.
+                ebpf::CALL => unimplemented!(),
+                ebpf::TAIL_CALL => unimplemented!(),
+                ebpf::EXIT => {
+                    let ret = bcx.use_var(self.registers[0]);
+                    bcx.ins().return_(&[ret]);
+                }
+                _ => unimplemented!("inst: {:?}", insn),
+            }
+
+            insn_ptr += 1;
+        }
+
+        Ok(())
+    }
+
+    fn insn_imm64(&mut self, bcx: &mut FunctionBuilder, insn: &Insn) -> Value {
+        bcx.ins().iconst(I64, insn.imm as u64 as i64)
+    }
+    fn insn_imm32(&mut self, bcx: &mut FunctionBuilder, insn: &Insn) -> Value {
+        bcx.ins().iconst(I32, insn.imm as u32 as u64 as i64)
+    }
+
+    fn insn_dst(&mut self, bcx: &mut FunctionBuilder, insn: &Insn) -> Value {
+        bcx.use_var(self.registers[insn.dst as usize])
+    }
+    fn insn_dst32(&mut self, bcx: &mut FunctionBuilder, insn: &Insn) -> Value {
+        let dst = self.insn_dst(bcx, insn);
+        bcx.ins().ireduce(I32, dst)
+    }
+
+    fn insn_src(&mut self, bcx: &mut FunctionBuilder, insn: &Insn) -> Value {
+        bcx.use_var(self.registers[insn.src as usize])
+    }
+    fn insn_src32(&mut self, bcx: &mut FunctionBuilder, insn: &Insn) -> Value {
+        let src = self.insn_src(bcx, insn);
+        bcx.ins().ireduce(I32, src)
+    }
+
+    fn set_dst(&mut self, bcx: &mut FunctionBuilder, insn: &Insn, val: Value) {
+        let dst = self.insn_dst(bcx, insn);
+        bcx.def_var(self.registers[insn.dst as usize], val);
+    }
+    fn set_dst32(&mut self, bcx: &mut FunctionBuilder, insn: &Insn, val: Value) {
+        let val32 = bcx.ins().uextend(I64, val);
+        self.set_dst(bcx, insn, val32);
+    }
+}
