@@ -4,7 +4,7 @@
 extern crate rbpf;
 mod common;
 
-use rbpf::assembler::assemble;
+use rbpf::{assembler::assemble, helpers};
 
 macro_rules! test_cranelift {
     ($name:ident, $prog:expr, $expected:expr) => {
@@ -250,21 +250,23 @@ test_cranelift!(
     0x1122334455667788
 );
 
-// #[test]
-// fn test_cranelift_call() {
-//     let prog = assemble("
-//         mov r1, 1
-//         mov r2, 2
-//         mov r3, 3
-//         mov r4, 4
-//         mov r5, 5
-//         call 0
-//         exit").unwrap();
-//     let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-//     vm.register_helper(0, helpers::gather_bytes).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit().unwrap(), 0x0102030405); }
-// }
+#[test]
+fn test_cranelift_call() {
+    let prog = assemble(
+        "
+        mov r1, 1
+        mov r2, 2
+        mov r3, 3
+        mov r4, 4
+        mov r5, 5
+        call 0
+        exit",
+    )
+    .unwrap();
+    let mut vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
+    vm.register_helper(0, helpers::gather_bytes).unwrap();
+    assert_eq!(vm.execute_cranelift().unwrap(), 0x0102030405);
+}
 
 // #[test]
 // fn test_cranelift_call_memfrob() {

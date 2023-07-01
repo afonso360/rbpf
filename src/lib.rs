@@ -435,11 +435,13 @@ impl<'a> EbpfVmMbuff<'a> {
             _ => mem.as_ptr() as *mut u8,
         };
 
-        let mut compiler = CraneliftCompiler::new();
+        let mut compiler = CraneliftCompiler::new(self.helpers.clone());
 
         let func = compiler.compile_function(prog)?;
         let ptr = compiler.get_function(func);
 
+        // unimplemented!();
+        // TODO: Review the order of arguments
         let res = ptr(
             mem_ptr,
             mem.len(),
@@ -448,21 +450,8 @@ impl<'a> EbpfVmMbuff<'a> {
             0,
             0,
         );
-        // unimplemented!();
 
         Ok(res)
-        // let res = compiler.call(func)?;
-
-        //     self.jit = Some(jit::JitMemory::new(prog, &self.helpers, true, false)?);
-
-        //     // The last two arguments are not used in this function. They would be used if there was a
-        //     // need to indicate to the JIT at which offset in the mbuff mem_ptr and mem_ptr + mem.len()
-        //     // should be stored; this is what happens with struct EbpfVmFixedMbuff.
-        //     match &self.jit {
-        //         Some(jit) => Ok(jit.get_prog()(mbuff.as_ptr() as *mut u8, mbuff.len(), mem_ptr, mem.len(), 0, 0)),
-        //         None => Err(Error::new(ErrorKind::Other,
-        //                     "Error: program has not been JIT-compiled")),
-        //     }
     }
 }
 
