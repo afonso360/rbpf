@@ -5,7 +5,7 @@ use cranelift_codegen::{
     ir::{
         condcodes::IntCC,
         types::{I32, I64},
-        AbiParam, Function, InstBuilder, LibCall, Signature, UserFuncName, Value,
+        AbiParam, Block, Function, InstBuilder, LibCall, Signature, UserFuncName, Value,
     },
     isa::{CallConv, OwnedTargetIsa},
     settings::{self, Configurable},
@@ -101,15 +101,11 @@ impl CraneliftCompiler {
         {
             let mut builder: FunctionBuilder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
 
-            // Register the VM registers as variables
-            for var in self.registers.iter() {
-                builder.declare_var(*var, I64);
-            }
-
             let entry = builder.create_block();
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
 
+            self.build_function_prelude(&mut builder, entry)?;
             self.translate_program(&mut builder, prog)?;
 
             builder.seal_all_blocks();
@@ -128,6 +124,28 @@ impl CraneliftCompiler {
         // ctx.clear();
 
         Ok(func_id)
+    }
+
+    fn build_function_prelude(
+        &mut self,
+        bcx: &mut FunctionBuilder,
+        entry: Block,
+    ) -> Result<(), Error> {
+        // Register the VM registers as variables
+        for var in self.registers.iter() {
+            bcx.declare_var(*var, I64);
+        }
+
+        // Set the first 5 arguments to the registers
+        // The eBPF ABI specifies that the first 5 arguments are availabe in
+        // registers r1-r5
+        for i in 0..5 {
+            let arg = bcx.block_params(entry)[i];
+            let var = self.registers[i + 1];
+            bcx.def_var(var, arg);
+        }
+
+        Ok(())
     }
 
     fn translate_program(&mut self, bcx: &mut FunctionBuilder, prog: &[u8]) -> Result<(), Error> {

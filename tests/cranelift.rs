@@ -15,6 +15,15 @@ macro_rules! test_cranelift {
             assert_eq!(vm.execute_cranelift().unwrap(), $expected);
         }
     };
+    ($name:ident, $prog:expr, $mem:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            let prog = assemble($prog).unwrap();
+            let mem = &mut $mem;
+            let vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
+            assert_eq!(vm.execute_cranelift(mem).unwrap(), $expected);
+        }
+    };
 }
 
 test_cranelift!(
@@ -186,19 +195,16 @@ test_cranelift!(
     0xffff8000
 );
 
-// #[test]
-// fn test_cranelift_be16() {
-//     let prog = assemble("
-//         ldxh r0, [r1]
-//         be16 r0
-//         exit").unwrap();
-//     let mem = &mut [
-//         0x11, 0x22
-//     ];
-//     let mut vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
-//     vm.jit_compile().unwrap();
-//     unsafe { assert_eq!(vm.execute_program_jit(mem).unwrap(), 0x1122); }
-// }
+// test_cranelift!(
+//     test_cranelift_be16,
+//     "
+//     ldxh r0, [r1]
+//     be16 r0
+//     exit
+//     ",
+//     [0x11, 0x22],
+//     0x1122
+// );
 
 // #[test]
 // fn test_cranelift_be16_high() {
