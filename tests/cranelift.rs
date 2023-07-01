@@ -6,213 +6,188 @@ mod common;
 
 use rbpf::assembler::assemble;
 
-#[test]
-fn test_cranelift_add() {
-    let prog = assemble(
-        "
-        mov32 r0, 0
-        mov32 r1, 2
-        add32 r0, 1
-        add32 r0, r1
-        exit",
-    )
-    .unwrap();
-
-    let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-    assert_eq!(vm.execute_cranelift().unwrap(), 0x3);
+macro_rules! test_cranelift {
+    ($name:ident, $prog:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            let prog = assemble($prog).unwrap();
+            let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
+            assert_eq!(vm.execute_cranelift().unwrap(), $expected);
+        }
+    };
 }
 
-#[test]
-fn test_cranelift_alu64_arith() {
-    let prog = assemble(
-        "
-        mov r0, 0
-        mov r1, 1
-        mov r2, 2
-        mov r3, 3
-        mov r4, 4
-        mov r5, 5
-        mov r6, 6
-        mov r7, 7
-        mov r8, 8
-        mov r9, 9
-        add r0, 23
-        add r0, r7
-        sub r0, 13
-        sub r0, r1
-        mul r0, 7
-        mul r0, r3
-        div r0, 2
-        div r0, r4
-        exit",
-    )
-    .unwrap();
+test_cranelift!(
+    test_cranelift_add,
+    "
+    mov32 r0, 0
+    mov32 r1, 2
+    add32 r0, 1
+    add32 r0, r1
+    exit
+    ",
+    0x3
+);
 
-    let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-    assert_eq!(vm.execute_cranelift().unwrap(), 0x2a);
-}
+test_cranelift!(
+    test_cranelift_alu64_arith,
+    "
+    mov r0, 0
+    mov r1, 1
+    mov r2, 2
+    mov r3, 3
+    mov r4, 4
+    mov r5, 5
+    mov r6, 6
+    mov r7, 7
+    mov r8, 8
+    mov r9, 9
+    add r0, 23
+    add r0, r7
+    sub r0, 13
+    sub r0, r1
+    mul r0, 7
+    mul r0, r3
+    div r0, 2
+    div r0, r4
+    exit
+    ",
+    0x2a
+);
 
-#[test]
-fn test_cranelift_alu64_bit() {
-    let prog = assemble(
-        "
-        mov r0, 0
-        mov r1, 1
-        mov r2, 2
-        mov r3, 3
-        mov r4, 4
-        mov r5, 5
-        mov r6, 6
-        mov r7, 7
-        mov r8, 8
-        or r0, r5
-        or r0, 0xa0
-        and r0, 0xa3
-        mov r9, 0x91
-        and r0, r9
-        lsh r0, 32
-        lsh r0, 22
-        lsh r0, r8
-        rsh r0, 32
-        rsh r0, 19
-        rsh r0, r7
-        xor r0, 0x03
-        xor r0, r2
-        exit",
-    )
-    .unwrap();
+test_cranelift!(
+    test_cranelift_alu64_bit,
+    "
+    mov r0, 0
+    mov r1, 1
+    mov r2, 2
+    mov r3, 3
+    mov r4, 4
+    mov r5, 5
+    mov r6, 6
+    mov r7, 7
+    mov r8, 8
+    or r0, r5
+    or r0, 0xa0
+    and r0, 0xa3
+    mov r9, 0x91
+    and r0, r9
+    lsh r0, 32
+    lsh r0, 22
+    lsh r0, r8
+    rsh r0, 32
+    rsh r0, 19
+    rsh r0, r7
+    xor r0, 0x03
+    xor r0, r2
+    exit
+    ",
+    0x11
+);
 
-    let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-    assert_eq!(vm.execute_cranelift().unwrap(), 0x11);
-}
+test_cranelift!(
+    test_cranelift_alu_arith,
+    "
+    mov32 r0, 0
+    mov32 r1, 1
+    mov32 r2, 2
+    mov32 r3, 3
+    mov32 r4, 4
+    mov32 r5, 5
+    mov32 r6, 6
+    mov32 r7, 7
+    mov32 r8, 8
+    mov32 r9, 9
+    add32 r0, 23
+    add32 r0, r7
+    sub32 r0, 13
+    sub32 r0, r1
+    mul32 r0, 7
+    mul32 r0, r3
+    div32 r0, 2
+    div32 r0, r4
+    exit
+    ",
+    0x2a
+);
 
-#[test]
-fn test_cranelift_alu_arith() {
-    let prog = assemble(
-        "
-        mov32 r0, 0
-        mov32 r1, 1
-        mov32 r2, 2
-        mov32 r3, 3
-        mov32 r4, 4
-        mov32 r5, 5
-        mov32 r6, 6
-        mov32 r7, 7
-        mov32 r8, 8
-        mov32 r9, 9
-        add32 r0, 23
-        add32 r0, r7
-        sub32 r0, 13
-        sub32 r0, r1
-        mul32 r0, 7
-        mul32 r0, r3
-        div32 r0, 2
-        div32 r0, r4
-        exit",
-    )
-    .unwrap();
+test_cranelift!(
+    test_cranelift_alu_bit,
+    "
+    mov32 r0, 0
+    mov32 r1, 1
+    mov32 r2, 2
+    mov32 r3, 3
+    mov32 r4, 4
+    mov32 r5, 5
+    mov32 r6, 6
+    mov32 r7, 7
+    mov32 r8, 8
+    or32 r0, r5
+    or32 r0, 0xa0
+    and32 r0, 0xa3
+    mov32 r9, 0x91
+    and32 r0, r9
+    lsh32 r0, 22
+    lsh32 r0, r8
+    rsh32 r0, 19
+    rsh32 r0, r7
+    xor32 r0, 0x03
+    xor32 r0, r2
+    exit
+    ",
+    0x11
+);
 
-    let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-    assert_eq!(vm.execute_cranelift().unwrap(), 0x2a);
-}
+test_cranelift!(
+    test_cranelift_arsh32_high_shift,
+    "
+    mov r0, 8
+    lddw r1, 0x100000001
+    arsh32 r0, r1
+    exit
+    ",
+    0x4
+);
 
-#[test]
-fn test_cranelift_alu_bit() {
-    let prog = assemble(
-        "
-        mov32 r0, 0
-        mov32 r1, 1
-        mov32 r2, 2
-        mov32 r3, 3
-        mov32 r4, 4
-        mov32 r5, 5
-        mov32 r6, 6
-        mov32 r7, 7
-        mov32 r8, 8
-        or32 r0, r5
-        or32 r0, 0xa0
-        and32 r0, 0xa3
-        mov32 r9, 0x91
-        and32 r0, r9
-        lsh32 r0, 22
-        lsh32 r0, r8
-        rsh32 r0, 19
-        rsh32 r0, r7
-        xor32 r0, 0x03
-        xor32 r0, r2
-        exit",
-    )
-    .unwrap();
+test_cranelift!(
+    test_cranelift_arsh,
+    "
+    mov32 r0, 0xf8
+    lsh32 r0, 28
+    arsh32 r0, 16
+    exit
+    ",
+    0xffff8000
+);
 
-    let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-    assert_eq!(vm.execute_cranelift().unwrap(), 0x11);
-}
+test_cranelift!(
+    test_cranelift_arsh64,
+    "
+    mov32 r0, 1
+    lsh r0, 63
+    arsh r0, 55
+    mov32 r1, 5
+    arsh r0, r1
+    exit
+    ",
+    0xfffffffffffffff8
+);
 
-#[test]
-fn test_cranelift_arsh32_high_shift() {
-    let prog = assemble(
-        "
-        mov r0, 8
-        lddw r1, 0x100000001
-        arsh32 r0, r1
-        exit",
-    )
-    .unwrap();
-
-    let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-    assert_eq!(vm.execute_cranelift().unwrap(), 0x4);
-}
-
-#[test]
-fn test_cranelift_arsh() {
-    let prog = assemble(
-        "
-        mov32 r0, 0xf8
-        lsh32 r0, 28
-        arsh32 r0, 16
-        exit",
-    )
-    .unwrap();
-
-    let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-    assert_eq!(vm.execute_cranelift().unwrap(), 0xffff8000);
-}
-
-#[test]
-fn test_cranelift_arsh64() {
-    let prog = assemble(
-        "
-        mov32 r0, 1
-        lsh r0, 63
-        arsh r0, 55
-        mov32 r1, 5
-        arsh r0, r1
-        exit",
-    )
-    .unwrap();
-
-    let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-    assert_eq!(vm.execute_cranelift().unwrap(), 0xfffffffffffffff8);
-}
-
-#[test]
-fn test_cranelift_arsh_reg() {
-    let prog = assemble(
-        "
-        mov32 r0, 0xf8
-        mov32 r1, 16
-        lsh32 r0, 28
-        arsh32 r0, r1
-        exit",
-    )
-    .unwrap();
-
-    let vm = rbpf::EbpfVmNoData::new(Some(&prog)).unwrap();
-    assert_eq!(vm.execute_cranelift().unwrap(), 0xffff8000);
-}
+test_cranelift!(
+    test_cranelift_arsh_reg,
+    "
+    mov32 r0, 0xf8
+    mov32 r1, 16
+    lsh32 r0, 28
+    arsh32 r0, r1
+    exit
+    ",
+    0xffff8000
+);
 
 // #[test]
-// fn test_jit_be16() {
+// fn test_cranelift_be16() {
 //     let prog = assemble("
 //         ldxh r0, [r1]
 //         be16 r0
@@ -226,7 +201,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_be16_high() {
+// fn test_cranelift_be16_high() {
 //     let prog = assemble("
 //         ldxdw r0, [r1]
 //         be16 r0
@@ -240,7 +215,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_be32() {
+// fn test_cranelift_be32() {
 //     let prog = assemble("
 //         ldxw r0, [r1]
 //         be32 r0
@@ -254,7 +229,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_be32_high() {
+// fn test_cranelift_be32_high() {
 //     let prog = assemble("
 //         ldxdw r0, [r1]
 //         be32 r0
@@ -268,7 +243,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_be64() {
+// fn test_cranelift_be64() {
 //     let prog = assemble("
 //         ldxdw r0, [r1]
 //         be64 r0
@@ -282,7 +257,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_call() {
+// fn test_cranelift_call() {
 //     let prog = assemble("
 //         mov r1, 1
 //         mov r2, 2
@@ -298,7 +273,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_call_memfrob() {
+// fn test_cranelift_call_memfrob() {
 //     let prog = assemble("
 //         mov r6, r1
 //         add r1, 2
@@ -319,7 +294,7 @@ fn test_cranelift_arsh_reg() {
 // // TODO: helpers::trash_registers needs asm!().
 // // Try this again once asm!() is available in stable.
 // //#[test]
-// //fn test_jit_call_save() {
+// //fn test_cranelift_call_save() {
 //     //let prog = &[
 //         //0xb7, 0x06, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
 //         //0xb7, 0x07, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
@@ -340,7 +315,7 @@ fn test_cranelift_arsh_reg() {
 // //}
 
 // #[test]
-// fn test_jit_div32_high_divisor() {
+// fn test_cranelift_div32_high_divisor() {
 //     let prog = assemble("
 //         mov r0, 12
 //         lddw r1, 0x100000004
@@ -352,7 +327,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_div32_imm() {
+// fn test_cranelift_div32_imm() {
 //     let prog = assemble("
 //         lddw r0, 0x10000000c
 //         div32 r0, 4
@@ -363,7 +338,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_div32_reg() {
+// fn test_cranelift_div32_reg() {
 //     let prog = assemble("
 //         lddw r0, 0x10000000c
 //         mov r1, 4
@@ -375,7 +350,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_div64_imm() {
+// fn test_cranelift_div64_imm() {
 //     let prog = assemble("
 //         mov r0, 0xc
 //         lsh r0, 32
@@ -387,7 +362,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_div64_reg() {
+// fn test_cranelift_div64_reg() {
 //     let prog = assemble("
 //         mov r0, 0xc
 //         lsh r0, 32
@@ -400,7 +375,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_early_exit() {
+// fn test_cranelift_early_exit() {
 //     let prog = assemble("
 //         mov r0, 3
 //         exit
@@ -413,12 +388,12 @@ fn test_cranelift_arsh_reg() {
 
 // // uBPF limits the number of user functions at 64. We don't.
 // //#[test]
-// //fn test_jit_err_call_bad_imm() {
+// //fn test_cranelift_err_call_bad_imm() {
 // //}
 
 // #[test]
 // #[should_panic(expected = "[JIT] Error: unknown helper function (id: 0x3f)")]
-// fn test_jit_err_call_unreg() {
+// fn test_cranelift_err_call_unreg() {
 //     let prog = assemble("
 //         mov r1, 1
 //         mov r2, 2
@@ -433,7 +408,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_div64_by_zero_imm() {
+// fn test_cranelift_div64_by_zero_imm() {
 //     let prog = assemble("
 //         mov32 r0, 1
 //         div r0, 0
@@ -444,7 +419,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_div_by_zero_imm() {
+// fn test_cranelift_div_by_zero_imm() {
 //     let prog = assemble("
 //         mov32 r0, 1
 //         div32 r0, 0
@@ -455,7 +430,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mod64_by_zero_imm() {
+// fn test_cranelift_mod64_by_zero_imm() {
 //     let prog = assemble("
 //         mov32 r0, 1
 //         mod r0, 0
@@ -466,7 +441,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mod_by_zero_imm() {
+// fn test_cranelift_mod_by_zero_imm() {
 //     let prog = assemble("
 //         mov32 r0, 1
 //         mod32 r0, 0
@@ -477,7 +452,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_div64_by_zero_reg() {
+// fn test_cranelift_div64_by_zero_reg() {
 //     let prog = assemble("
 //         mov32 r0, 1
 //         mov32 r1, 0
@@ -489,7 +464,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_div_by_zero_reg() {
+// fn test_cranelift_div_by_zero_reg() {
 //     let prog = assemble("
 //         mov32 r0, 1
 //         mov32 r1, 0
@@ -501,7 +476,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mod64_by_zero_reg() {
+// fn test_cranelift_mod64_by_zero_reg() {
 //     let prog = assemble("
 //         mov32 r0, 1
 //         mov32 r1, 0
@@ -513,7 +488,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mod_by_zero_reg() {
+// fn test_cranelift_mod_by_zero_reg() {
 //     let prog = assemble("
 //         mov32 r0, 1
 //         mov32 r1, 0
@@ -527,7 +502,7 @@ fn test_cranelift_arsh_reg() {
 // // TODO SKIP: JIT disabled for this testcase (stack oob check not implemented)
 // // #[test]
 // // #[should_panic(expected = "Error: out of bounds memory store (insn #1)")]
-// // fn test_jit_err_stack_out_of_bound() {
+// // fn test_cranelift_err_stack_out_of_bound() {
 // //     let prog = &[
 // //         0x72, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 // //         0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -538,7 +513,7 @@ fn test_cranelift_arsh_reg() {
 // // }
 
 // #[test]
-// fn test_jit_exit() {
+// fn test_cranelift_exit() {
 //     let prog = assemble("
 //         mov r0, 0
 //         exit").unwrap();
@@ -548,7 +523,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ja() {
+// fn test_cranelift_ja() {
 //     let prog = assemble("
 //         mov r0, 1
 //         ja +1
@@ -560,7 +535,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jeq_imm() {
+// fn test_cranelift_jeq_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov32 r1, 0xa
@@ -576,7 +551,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jeq_reg() {
+// fn test_cranelift_jeq_reg() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov32 r1, 0xa
@@ -593,7 +568,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jge_imm() {
+// fn test_cranelift_jge_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov32 r1, 0xa
@@ -609,7 +584,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jle_imm() {
+// fn test_cranelift_jle_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov32 r1, 5
@@ -626,7 +601,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jle_reg() {
+// fn test_cranelift_jle_reg() {
 //     let prog = assemble("
 //         mov r0, 0
 //         mov r1, 5
@@ -645,7 +620,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jgt_imm() {
+// fn test_cranelift_jgt_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov32 r1, 5
@@ -661,7 +636,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jgt_reg() {
+// fn test_cranelift_jgt_reg() {
 //     let prog = assemble("
 //         mov r0, 0
 //         mov r1, 5
@@ -679,7 +654,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jlt_imm() {
+// fn test_cranelift_jlt_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov32 r1, 5
@@ -695,7 +670,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jlt_reg() {
+// fn test_cranelift_jlt_reg() {
 //     let prog = assemble("
 //         mov r0, 0
 //         mov r1, 5
@@ -713,7 +688,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jit_bounce() {
+// fn test_cranelift_jit_bounce() {
 //     let prog = assemble("
 //         mov r0, 1
 //         mov r6, r0
@@ -728,7 +703,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jne_reg() {
+// fn test_cranelift_jne_reg() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov32 r1, 0xb
@@ -745,7 +720,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jset_imm() {
+// fn test_cranelift_jset_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov32 r1, 0x7
@@ -761,7 +736,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jset_reg() {
+// fn test_cranelift_jset_reg() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov32 r1, 0x7
@@ -778,7 +753,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsge_imm() {
+// fn test_cranelift_jsge_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov r1, -2
@@ -795,7 +770,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsge_reg() {
+// fn test_cranelift_jsge_reg() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov r1, -2
@@ -814,7 +789,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsle_imm() {
+// fn test_cranelift_jsle_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov r1, -2
@@ -831,7 +806,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsle_reg() {
+// fn test_cranelift_jsle_reg() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov r1, -1
@@ -851,7 +826,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsgt_imm() {
+// fn test_cranelift_jsgt_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov r1, -2
@@ -867,7 +842,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsgt_reg() {
+// fn test_cranelift_jsgt_reg() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov r1, -2
@@ -884,7 +859,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jslt_imm() {
+// fn test_cranelift_jslt_imm() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov r1, -2
@@ -900,7 +875,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jslt_reg() {
+// fn test_cranelift_jslt_reg() {
 //     let prog = assemble("
 //         mov32 r0, 0
 //         mov r1, -2
@@ -918,7 +893,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jeq32_imm() {
+// fn test_cranelift_jeq32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -937,7 +912,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jeq32_reg() {
+// fn test_cranelift_jeq32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -957,7 +932,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jge32_imm() {
+// fn test_cranelift_jge32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -976,7 +951,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jge32_reg() {
+// fn test_cranelift_jge32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -996,7 +971,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jgt32_imm() {
+// fn test_cranelift_jgt32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1015,7 +990,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jgt32_reg() {
+// fn test_cranelift_jgt32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1037,7 +1012,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jle32_imm() {
+// fn test_cranelift_jle32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1057,7 +1032,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jle32_reg() {
+// fn test_cranelift_jle32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1079,7 +1054,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jlt32_imm() {
+// fn test_cranelift_jlt32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1098,7 +1073,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jlt32_reg() {
+// fn test_cranelift_jlt32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1119,7 +1094,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jne32_imm() {
+// fn test_cranelift_jne32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1139,7 +1114,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jne32_reg() {
+// fn test_cranelift_jne32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1160,7 +1135,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jset32_imm() {
+// fn test_cranelift_jset32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1179,7 +1154,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jset32_reg() {
+// fn test_cranelift_jset32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1199,7 +1174,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsge32_imm() {
+// fn test_cranelift_jsge32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1219,7 +1194,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsge32_reg() {
+// fn test_cranelift_jsge32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1241,7 +1216,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsgt32_imm() {
+// fn test_cranelift_jsgt32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1260,7 +1235,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsgt32_reg() {
+// fn test_cranelift_jsgt32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1280,7 +1255,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsle32_imm() {
+// fn test_cranelift_jsle32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1300,7 +1275,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jsle32_reg() {
+// fn test_cranelift_jsle32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1323,7 +1298,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jslt32_imm() {
+// fn test_cranelift_jslt32_imm() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1342,7 +1317,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_jslt32_reg() {
+// fn test_cranelift_jslt32_reg() {
 //     let prog = assemble("
 //         mov r9, 1
 //         lsh r9, 32
@@ -1363,7 +1338,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_lddw() {
+// fn test_cranelift_lddw() {
 //     let prog = assemble("
 //         lddw r0, 0x1122334455667788
 //         exit").unwrap();
@@ -1373,7 +1348,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_lddw2() {
+// fn test_cranelift_lddw2() {
 //     let prog = assemble("
 //         lddw r0, 0x0000000080000000
 //         exit").unwrap();
@@ -1383,7 +1358,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ldxb_all() {
+// fn test_cranelift_ldxb_all() {
 //     let prog = assemble("
 //         mov r0, r1
 //         ldxb r9, [r0+0]
@@ -1426,7 +1401,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ldxb() {
+// fn test_cranelift_ldxb() {
 //     let prog = assemble("
 //         ldxb r0, [r1+2]
 //         exit").unwrap();
@@ -1439,7 +1414,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ldxdw() {
+// fn test_cranelift_ldxdw() {
 //     let prog = assemble("
 //         ldxdw r0, [r1+2]
 //         exit").unwrap();
@@ -1453,7 +1428,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ldxh_all() {
+// fn test_cranelift_ldxh_all() {
 //     let prog = assemble("
 //         mov r0, r1
 //         ldxh r9, [r0+0]
@@ -1507,7 +1482,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ldxh_all2() {
+// fn test_cranelift_ldxh_all2() {
 //     let prog = assemble("
 //         mov r0, r1
 //         ldxh r9, [r0+0]
@@ -1551,7 +1526,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ldxh() {
+// fn test_cranelift_ldxh() {
 //     let prog = assemble("
 //         ldxh r0, [r1+2]
 //         exit").unwrap();
@@ -1564,7 +1539,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ldxh_same_reg() {
+// fn test_cranelift_ldxh_same_reg() {
 //     let prog = assemble("
 //         mov r0, r1
 //         sth [r0], 0x1234
@@ -1579,7 +1554,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ldxw_all() {
+// fn test_cranelift_ldxw_all() {
 //     let prog = assemble("
 //         mov r0, r1
 //         ldxw r9, [r0+0]
@@ -1625,7 +1600,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_ldxw() {
+// fn test_cranelift_ldxw() {
 //     let prog = assemble("
 //         ldxw r0, [r1+2]
 //         exit").unwrap();
@@ -1638,7 +1613,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_le16() {
+// fn test_cranelift_le16() {
 //     let prog = assemble("
 //         ldxh r0, [r1]
 //         le16 r0
@@ -1652,7 +1627,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_le32() {
+// fn test_cranelift_le32() {
 //     let prog = assemble("
 //         ldxw r0, [r1]
 //         le32 r0
@@ -1666,7 +1641,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_le64() {
+// fn test_cranelift_le64() {
 //     let prog = assemble("
 //         ldxdw r0, [r1]
 //         le64 r0
@@ -1680,7 +1655,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_lsh_reg() {
+// fn test_cranelift_lsh_reg() {
 //     let prog = assemble("
 //         mov r0, 0x1
 //         mov r7, 4
@@ -1692,7 +1667,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mod() {
+// fn test_cranelift_mod() {
 //     let prog = assemble("
 //         mov32 r0, 5748
 //         mod32 r0, 92
@@ -1705,7 +1680,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mod32() {
+// fn test_cranelift_mod32() {
 //     let prog = assemble("
 //         lddw r0, 0x100000003
 //         mod32 r0, 3
@@ -1716,7 +1691,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mod64() {
+// fn test_cranelift_mod64() {
 //     let prog = assemble("
 //         mov32 r0, -1316649930
 //         lsh r0, 32
@@ -1733,7 +1708,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mov() {
+// fn test_cranelift_mov() {
 //     let prog = assemble("
 //         mov32 r1, 1
 //         mov32 r0, r1
@@ -1744,7 +1719,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mul32_imm() {
+// fn test_cranelift_mul32_imm() {
 //     let prog = assemble("
 //         mov r0, 3
 //         mul32 r0, 4
@@ -1755,7 +1730,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mul32_reg() {
+// fn test_cranelift_mul32_reg() {
 //     let prog = assemble("
 //         mov r0, 3
 //         mov r1, 4
@@ -1767,7 +1742,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mul32_reg_overflow() {
+// fn test_cranelift_mul32_reg_overflow() {
 //     let prog = assemble("
 //         mov r0, 0x40000001
 //         mov r1, 4
@@ -1779,7 +1754,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mul64_imm() {
+// fn test_cranelift_mul64_imm() {
 //     let prog = assemble("
 //         mov r0, 0x40000001
 //         mul r0, 4
@@ -1790,7 +1765,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mul64_reg() {
+// fn test_cranelift_mul64_reg() {
 //     let prog = assemble("
 //         mov r0, 0x40000001
 //         mov r1, 4
@@ -1802,7 +1777,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_mul_loop() {
+// fn test_cranelift_mul_loop() {
 //     let prog = assemble("
 //         mov r0, 0x7
 //         add r1, 0xa
@@ -1820,7 +1795,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_neg64() {
+// fn test_cranelift_neg64() {
 //     let prog = assemble("
 //         mov32 r0, 2
 //         neg r0
@@ -1831,7 +1806,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_neg() {
+// fn test_cranelift_neg() {
 //     let prog = assemble("
 //         mov32 r0, 2
 //         neg32 r0
@@ -1842,7 +1817,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_prime() {
+// fn test_cranelift_prime() {
 //     let prog = assemble("
 //         mov r1, 67
 //         mov r0, 0x1
@@ -1866,7 +1841,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_rhs32() {
+// fn test_cranelift_rhs32() {
 //     let prog = assemble("
 //         xor r0, r0
 //         sub r0, 1
@@ -1878,7 +1853,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_rsh_reg() {
+// fn test_cranelift_rsh_reg() {
 //     let prog = assemble("
 //         mov r0, 0x10
 //         mov r7, 4
@@ -1890,7 +1865,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stack() {
+// fn test_cranelift_stack() {
 //     let prog = assemble("
 //         mov r1, 51
 //         stdw [r10-16], 0xab
@@ -1907,7 +1882,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stack2() {
+// fn test_cranelift_stack2() {
 //     let prog = assemble("
 //         stb [r10-4], 0x01
 //         stb [r10-3], 0x02
@@ -1933,7 +1908,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stb() {
+// fn test_cranelift_stb() {
 //     let prog = assemble("
 //         stb [r1+2], 0x11
 //         ldxb r0, [r1+2]
@@ -1947,7 +1922,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stdw() {
+// fn test_cranelift_stdw() {
 //     let prog = assemble("
 //         stdw [r1+2], 0x44332211
 //         ldxdw r0, [r1+2]
@@ -1962,7 +1937,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_sth() {
+// fn test_cranelift_sth() {
 //     let prog = assemble("
 //         sth [r1+2], 0x2211
 //         ldxh r0, [r1+2]
@@ -1976,7 +1951,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_string_stack() {
+// fn test_cranelift_string_stack() {
 //     let prog = assemble("
 //         mov r1, 0x78636261
 //         stxw [r10-8], r1
@@ -2013,7 +1988,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stw() {
+// fn test_cranelift_stw() {
 //     let prog = assemble("
 //         stw [r1+2], 0x44332211
 //         ldxw r0, [r1+2]
@@ -2027,7 +2002,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stxb() {
+// fn test_cranelift_stxb() {
 //     let prog = assemble("
 //         mov32 r2, 0x11
 //         stxb [r1+2], r2
@@ -2042,7 +2017,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stxb_all() {
+// fn test_cranelift_stxb_all() {
 //     let prog = assemble("
 //         mov r0, 0xf0
 //         mov r2, 0xf2
@@ -2072,7 +2047,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stxb_all2() {
+// fn test_cranelift_stxb_all2() {
 //     let prog = assemble("
 //         mov r0, r1
 //         mov r1, 0xf1
@@ -2091,7 +2066,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stxb_chain() {
+// fn test_cranelift_stxb_chain() {
 //     let prog = assemble("
 //         mov r0, r1
 //         ldxb r9, [r0+0]
@@ -2124,7 +2099,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stxdw() {
+// fn test_cranelift_stxdw() {
 //     let prog = assemble("
 //         mov r2, -2005440939
 //         lsh r2, 32
@@ -2142,7 +2117,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stxh() {
+// fn test_cranelift_stxh() {
 //     let prog = assemble("
 //         mov32 r2, 0x2211
 //         stxh [r1+2], r2
@@ -2157,7 +2132,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_stxw() {
+// fn test_cranelift_stxw() {
 //     let prog = assemble("
 //         mov32 r2, 0x44332211
 //         stxw [r1+2], r2
@@ -2172,7 +2147,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_subnet() {
+// fn test_cranelift_subnet() {
 //     let prog = assemble("
 //         mov r2, 0xe
 //         ldxh r3, [r1+12]
@@ -2228,7 +2203,7 @@ fn test_cranelift_arsh_reg() {
 // ];
 
 // #[test]
-// fn test_jit_tcp_port80_match() {
+// fn test_cranelift_tcp_port80_match() {
 //     let mem = &mut [
 //         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x06,
 //         0x07, 0x08, 0x09, 0x0a, 0x08, 0x00, 0x45, 0x00,
@@ -2251,7 +2226,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_tcp_port80_nomatch() {
+// fn test_cranelift_tcp_port80_nomatch() {
 //     let mem = &mut [
 //         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x06,
 //         0x07, 0x08, 0x09, 0x0a, 0x08, 0x00, 0x45, 0x00,
@@ -2274,7 +2249,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_tcp_port80_nomatch_ethertype() {
+// fn test_cranelift_tcp_port80_nomatch_ethertype() {
 //     let mem = &mut [
 //         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x06,
 //         0x07, 0x08, 0x09, 0x0a, 0x08, 0x01, 0x45, 0x00,
@@ -2297,7 +2272,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_tcp_port80_nomatch_proto() {
+// fn test_cranelift_tcp_port80_nomatch_proto() {
 //     let mem = &mut [
 //         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x06,
 //         0x07, 0x08, 0x09, 0x0a, 0x08, 0x00, 0x45, 0x00,
@@ -2320,7 +2295,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_tcp_sack_match() {
+// fn test_cranelift_tcp_sack_match() {
 //     let mut mem = TCP_SACK_MATCH.to_vec();
 //     let prog = assemble(TCP_SACK_ASM).unwrap();
 //     let mut vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
@@ -2329,7 +2304,7 @@ fn test_cranelift_arsh_reg() {
 // }
 
 // #[test]
-// fn test_jit_tcp_sack_nomatch() {
+// fn test_cranelift_tcp_sack_nomatch() {
 //     let mut mem = TCP_SACK_NOMATCH.to_vec();
 //     let prog = assemble(TCP_SACK_ASM).unwrap();
 //     let mut vm = rbpf::EbpfVmRaw::new(Some(&prog)).unwrap();
