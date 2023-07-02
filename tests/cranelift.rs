@@ -478,16 +478,16 @@ test_cranelift!(
     0x0
 );
 
-// test_cranelift!(
-//     test_cranelift_ja,
-//     "
-//     mov r0, 1
-//     ja +1
-//     mov r0, 2
-//     exit
-//     ",
-//     0x1
-// );
+test_cranelift!(
+    test_cranelift_ja,
+    "
+    mov r0, 1
+    ja +1
+    mov r0, 2
+    exit
+    ",
+    0x1
+);
 
 // test_cranelift!(
 //     test_cranelift_jeq_imm,

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, convert::TryInto};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    convert::TryInto,
+};
 
 use cranelift_codegen::{
     entity::EntityRef,
@@ -41,6 +44,11 @@ pub(crate) struct CraneliftCompiler {
 
     helpers: HashMap<u32, ebpf::Helper>,
     helper_func_refs: HashMap<u32, FuncRef>,
+
+    /// List of blocks corresponding to each instruction.
+    /// We only store the first instruction that observes a new block
+    insn_blocks: BTreeMap<u32, Block>,
+    filled_blocks: HashSet<Block>,
 
     /// Map of register numbers to Cranelift variables.
     registers: [Variable; 11],
@@ -85,6 +93,8 @@ impl CraneliftCompiler {
             module,
             helpers,
             helper_func_refs: HashMap::new(),
+            insn_blocks: BTreeMap::new(),
+            filled_blocks: HashSet::new(),
             registers,
             mem_start: Variable::new(11),
             mem_end: Variable::new(12),
@@ -139,12 +149,12 @@ impl CraneliftCompiler {
             builder.finalize();
         }
 
-        // println!("Before Opts: {}", ctx.func.display());
+        println!("Before Opts: {}", ctx.func.display());
 
         ctx.verify(&*self.isa).unwrap();
         ctx.optimize(&*self.isa).unwrap();
 
-        println!("After Opts: {}", ctx.func.display());
+        // println!("After Opts: {}", ctx.func.display());
 
         self.module.define_function(func_id, &mut ctx).unwrap();
         self.module.finalize_definitions().unwrap();
@@ -230,6 +240,12 @@ impl CraneliftCompiler {
         bcx.def_var(self.mbuf_start, mbuf_start);
         bcx.def_var(self.mbuf_end, mbuf_end);
 
+        // Insert the *actual* initial block
+        let program_entry = bcx.create_block();
+        bcx.ins().jump(program_entry, &[]);
+        self.filled_blocks.insert(entry);
+        self.insn_blocks.insert(0, program_entry);
+
         Ok(())
     }
 
@@ -238,9 +254,22 @@ impl CraneliftCompiler {
         while insn_ptr * ebpf::INSN_SIZE < prog.len() {
             let insn = ebpf::get_insn(prog, insn_ptr);
 
-            // This is only used in JMP ops
-            let target_pc = insn_ptr as isize + insn.off as isize + 1;
-            // self.pc_locs[insn_ptr] = mem.offset;
+            // If this instruction is on a new block switch to it.
+            if let Some(block) = self.insn_blocks.get(&(insn_ptr as u32)) {
+                dbg!(bcx.current_block().unwrap());
+                dbg!(*block);
+                dbg!(&self.filled_blocks);
+
+                let current_block = bcx.current_block().unwrap();
+                if current_block != *block {
+                    // Blocks must have a terminator instruction at the end before we switch away from them
+                    if !self.filled_blocks.contains(&current_block) {
+                        bcx.ins().trap(TrapCode::UnreachableCodeReached);
+                    }
+
+                    bcx.switch_to_block(*block);
+                }
+            }
 
             // Set the source location for the instruction
             bcx.set_srcloc(SourceLoc::new(insn_ptr as u32));
@@ -790,8 +819,26 @@ impl CraneliftCompiler {
                 }
 
                 // BPF_JMP class
-                // // TODO: check this actually works as expected for signed / unsigned ops
-                // ebpf::JA         =>                                             do_jump(),
+                ebpf::JA => {
+                    let target_pc: u32 = (insn_ptr as isize + insn.off as isize + 1)
+                        .try_into()
+                        .unwrap();
+
+                    let target_block = self
+                        .insn_blocks
+                        .entry(target_pc)
+                        .or_insert_with(|| bcx.create_block());
+
+                    bcx.ins().jump(*target_block, &[]);
+                    self.filled_blocks.insert(*target_block);
+
+                    // This is the fallthrough block
+                    let continuation_block = self
+                        .insn_blocks
+                        .entry((insn_ptr + 1) as u32)
+                        .or_insert_with(|| bcx.create_block());
+                    bcx.switch_to_block(*continuation_block);
+                }
                 // ebpf::JEQ_IMM    => if  reg[_dst] == insn.imm as u64          { do_jump(); },
                 // ebpf::JEQ_REG    => if  reg[_dst] == reg[_src]                { do_jump(); },
                 // ebpf::JGT_IMM    => if  reg[_dst] >  insn.imm as u64          { do_jump(); },
@@ -857,6 +904,7 @@ impl CraneliftCompiler {
                 ebpf::EXIT => {
                     let ret = bcx.use_var(self.registers[0]);
                     bcx.ins().return_(&[ret]);
+                    self.filled_blocks.insert(bcx.current_block().unwrap());
                 }
                 _ => unimplemented!("inst: {:?}", insn),
             }
