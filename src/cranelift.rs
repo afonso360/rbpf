@@ -19,7 +19,10 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use crate::ebpf::{self, Insn, STACK_SIZE};
+use crate::ebpf::{
+    self, Insn, BPF_ALU_OP_MASK, BPF_JEQ, BPF_JGE, BPF_JGT, BPF_JLE, BPF_JLT, BPF_JMP32, BPF_JNE,
+    BPF_JSET, BPF_JSGE, BPF_JSGT, BPF_JSLE, BPF_JSLT, BPF_X, JEQ_REG, STACK_SIZE,
+};
 
 use super::Error;
 
@@ -149,16 +152,16 @@ impl CraneliftCompiler {
             builder.finalize();
         }
 
-        println!("Before Opts: {}", ctx.func.display());
+        // println!("Before Opts: {}", ctx.func.display());
 
         ctx.verify(&*self.isa).unwrap();
         ctx.optimize(&*self.isa).unwrap();
 
-        // println!("After Opts: {}", ctx.func.display());
+        println!("After Opts: {}", ctx.func.display());
 
         self.module.define_function(func_id, &mut ctx).unwrap();
         self.module.finalize_definitions().unwrap();
-        // ctx.clear();
+        ctx.clear();
 
         Ok(func_id)
     }
@@ -191,7 +194,7 @@ impl CraneliftCompiler {
         }
 
         // Register the helpers
-        for (k, v) in self.helpers.iter() {
+        for (k, _) in self.helpers.iter() {
             let name = format!("helper_{}", k);
             let sig = Signature {
                 params: vec![
@@ -243,7 +246,7 @@ impl CraneliftCompiler {
         // Insert the *actual* initial block
         let program_entry = bcx.create_block();
         bcx.ins().jump(program_entry, &[]);
-        self.filled_blocks.insert(entry);
+        self.filled_blocks.insert(bcx.current_block().unwrap());
         self.insn_blocks.insert(0, program_entry);
 
         Ok(())
@@ -256,19 +259,13 @@ impl CraneliftCompiler {
 
             // If this instruction is on a new block switch to it.
             if let Some(block) = self.insn_blocks.get(&(insn_ptr as u32)) {
-                dbg!(bcx.current_block().unwrap());
-                dbg!(*block);
-                dbg!(&self.filled_blocks);
-
+                // Blocks must have a terminator instruction at the end before we switch away from them
                 let current_block = bcx.current_block().unwrap();
-                if current_block != *block {
-                    // Blocks must have a terminator instruction at the end before we switch away from them
-                    if !self.filled_blocks.contains(&current_block) {
-                        bcx.ins().trap(TrapCode::UnreachableCodeReached);
-                    }
-
-                    bcx.switch_to_block(*block);
+                if !self.filled_blocks.contains(&current_block) {
+                    bcx.ins().jump(*block, &[]);
                 }
+
+                bcx.switch_to_block(*block);
             }
 
             // Set the source location for the instruction
@@ -818,73 +815,97 @@ impl CraneliftCompiler {
                     self.set_dst(bcx, &insn, res);
                 }
 
-                // BPF_JMP class
+                // BPF_JMP & BPF_JMP32 class
                 ebpf::JA => {
-                    let target_pc: u32 = (insn_ptr as isize + insn.off as isize + 1)
-                        .try_into()
-                        .unwrap();
+                    let (_, target_block) = self.prepare_jump_blocks(bcx, insn_ptr, &insn);
 
-                    let target_block = self
-                        .insn_blocks
-                        .entry(target_pc)
-                        .or_insert_with(|| bcx.create_block());
-
-                    bcx.ins().jump(*target_block, &[]);
-                    self.filled_blocks.insert(*target_block);
-
-                    // This is the fallthrough block
-                    let continuation_block = self
-                        .insn_blocks
-                        .entry((insn_ptr + 1) as u32)
-                        .or_insert_with(|| bcx.create_block());
-                    bcx.switch_to_block(*continuation_block);
+                    bcx.ins().jump(target_block, &[]);
+                    self.filled_blocks.insert(bcx.current_block().unwrap());
                 }
-                // ebpf::JEQ_IMM    => if  reg[_dst] == insn.imm as u64          { do_jump(); },
-                // ebpf::JEQ_REG    => if  reg[_dst] == reg[_src]                { do_jump(); },
-                // ebpf::JGT_IMM    => if  reg[_dst] >  insn.imm as u64          { do_jump(); },
-                // ebpf::JGT_REG    => if  reg[_dst] >  reg[_src]                { do_jump(); },
-                // ebpf::JGE_IMM    => if  reg[_dst] >= insn.imm as u64          { do_jump(); },
-                // ebpf::JGE_REG    => if  reg[_dst] >= reg[_src]                { do_jump(); },
-                // ebpf::JLT_IMM    => if  reg[_dst] <  insn.imm as u64          { do_jump(); },
-                // ebpf::JLT_REG    => if  reg[_dst] <  reg[_src]                { do_jump(); },
-                // ebpf::JLE_IMM    => if  reg[_dst] <= insn.imm as u64          { do_jump(); },
-                // ebpf::JLE_REG    => if  reg[_dst] <= reg[_src]                { do_jump(); },
-                // ebpf::JSET_IMM   => if  reg[_dst] &  insn.imm as u64 != 0     { do_jump(); },
-                // ebpf::JSET_REG   => if  reg[_dst] &  reg[_src]       != 0     { do_jump(); },
-                // ebpf::JNE_IMM    => if  reg[_dst] != insn.imm as u64          { do_jump(); },
-                // ebpf::JNE_REG    => if  reg[_dst] != reg[_src]                { do_jump(); },
-                // ebpf::JSGT_IMM   => if  reg[_dst] as i64  >  insn.imm  as i64 { do_jump(); },
-                // ebpf::JSGT_REG   => if  reg[_dst] as i64  >  reg[_src] as i64 { do_jump(); },
-                // ebpf::JSGE_IMM   => if  reg[_dst] as i64  >= insn.imm  as i64 { do_jump(); },
-                // ebpf::JSGE_REG   => if  reg[_dst] as i64  >= reg[_src] as i64 { do_jump(); },
-                // ebpf::JSLT_IMM   => if (reg[_dst] as i64) <  insn.imm  as i64 { do_jump(); },
-                // ebpf::JSLT_REG   => if (reg[_dst] as i64) <  reg[_src] as i64 { do_jump(); },
-                // ebpf::JSLE_IMM   => if  reg[_dst] as i64  <= insn.imm  as i64 { do_jump(); },
-                // ebpf::JSLE_REG   => if  reg[_dst] as i64  <= reg[_src] as i64 { do_jump(); },
+                ebpf::JEQ_IMM
+                | ebpf::JEQ_REG
+                | ebpf::JGT_IMM
+                | ebpf::JGT_REG
+                | ebpf::JGE_IMM
+                | ebpf::JGE_REG
+                | ebpf::JLT_IMM
+                | ebpf::JLT_REG
+                | ebpf::JLE_IMM
+                | ebpf::JLE_REG
+                | ebpf::JNE_IMM
+                | ebpf::JNE_REG
+                | ebpf::JSGT_IMM
+                | ebpf::JSGT_REG
+                | ebpf::JSGE_IMM
+                | ebpf::JSGE_REG
+                | ebpf::JSLT_IMM
+                | ebpf::JSLT_REG
+                | ebpf::JSLE_IMM
+                | ebpf::JSLE_REG
+                | ebpf::JSET_IMM
+                | ebpf::JSET_REG
+                | ebpf::JEQ_IMM32
+                | ebpf::JEQ_REG32
+                | ebpf::JGT_IMM32
+                | ebpf::JGT_REG32
+                | ebpf::JGE_IMM32
+                | ebpf::JGE_REG32
+                | ebpf::JLT_IMM32
+                | ebpf::JLT_REG32
+                | ebpf::JLE_IMM32
+                | ebpf::JLE_REG32
+                | ebpf::JNE_IMM32
+                | ebpf::JNE_REG32
+                | ebpf::JSGT_IMM32
+                | ebpf::JSGT_REG32
+                | ebpf::JSGE_IMM32
+                | ebpf::JSGE_REG32
+                | ebpf::JSLT_IMM32
+                | ebpf::JSLT_REG32
+                | ebpf::JSLE_IMM32
+                | ebpf::JSLE_REG32
+                | ebpf::JSET_IMM32
+                | ebpf::JSET_REG32 => {
+                    let (fallthrough, target) = self.prepare_jump_blocks(bcx, insn_ptr, &insn);
 
-                // BPF_JMP32 class
-                // ebpf::JEQ_IMM32  => if  reg[_dst] as u32  == insn.imm  as u32      { do_jump(); },
-                // ebpf::JEQ_REG32  => if  reg[_dst] as u32  == reg[_src] as u32      { do_jump(); },
-                // ebpf::JGT_IMM32  => if  reg[_dst] as u32  >  insn.imm  as u32      { do_jump(); },
-                // ebpf::JGT_REG32  => if  reg[_dst] as u32  >  reg[_src] as u32      { do_jump(); },
-                // ebpf::JGE_IMM32  => if  reg[_dst] as u32  >= insn.imm  as u32      { do_jump(); },
-                // ebpf::JGE_REG32  => if  reg[_dst] as u32  >= reg[_src] as u32      { do_jump(); },
-                // ebpf::JLT_IMM32  => if (reg[_dst] as u32) <  insn.imm  as u32      { do_jump(); },
-                // ebpf::JLT_REG32  => if (reg[_dst] as u32) <  reg[_src] as u32      { do_jump(); },
-                // ebpf::JLE_IMM32  => if  reg[_dst] as u32  <= insn.imm  as u32      { do_jump(); },
-                // ebpf::JLE_REG32  => if  reg[_dst] as u32  <= reg[_src] as u32      { do_jump(); },
-                // ebpf::JSET_IMM32 => if  reg[_dst] as u32  &  insn.imm  as u32 != 0 { do_jump(); },
-                // ebpf::JSET_REG32 => if  reg[_dst] as u32  &  reg[_src] as u32 != 0 { do_jump(); },
-                // ebpf::JNE_IMM32  => if  reg[_dst] as u32  != insn.imm  as u32      { do_jump(); },
-                // ebpf::JNE_REG32  => if  reg[_dst] as u32  != reg[_src] as u32      { do_jump(); },
-                // ebpf::JSGT_IMM32 => if  reg[_dst] as i32  >  insn.imm              { do_jump(); },
-                // ebpf::JSGT_REG32 => if  reg[_dst] as i32  >  reg[_src] as i32      { do_jump(); },
-                // ebpf::JSGE_IMM32 => if  reg[_dst] as i32  >= insn.imm              { do_jump(); },
-                // ebpf::JSGE_REG32 => if  reg[_dst] as i32  >= reg[_src] as i32      { do_jump(); },
-                // ebpf::JSLT_IMM32 => if (reg[_dst] as i32) <  insn.imm              { do_jump(); },
-                // ebpf::JSLT_REG32 => if (reg[_dst] as i32) <  reg[_src] as i32      { do_jump(); },
-                // ebpf::JSLE_IMM32 => if  reg[_dst] as i32  <= insn.imm              { do_jump(); },
-                // ebpf::JSLE_REG32 => if  reg[_dst] as i32  <= reg[_src] as i32      { do_jump(); },
+                    let is_reg = (insn.opc & BPF_X) != 0;
+                    let is_32 = (insn.opc & BPF_JMP32) != 0;
+                    let intcc = match insn.opc {
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JEQ => IntCC::Equal,
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JNE => IntCC::NotEqual,
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JGT => IntCC::UnsignedGreaterThan,
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JGE => IntCC::UnsignedGreaterThanOrEqual,
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JLT => IntCC::UnsignedLessThan,
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JLE => IntCC::UnsignedLessThanOrEqual,
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JSGT => IntCC::SignedGreaterThan,
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JSGE => IntCC::SignedGreaterThanOrEqual,
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JSLT => IntCC::SignedLessThan,
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JSLE => IntCC::SignedLessThanOrEqual,
+                        // JSET is handled specially below
+                        c if (c & BPF_ALU_OP_MASK) == BPF_JSET => IntCC::NotEqual,
+                        _ => unreachable!(),
+                    };
+
+                    let lhs = if is_32 {
+                        self.insn_dst32(bcx, &insn)
+                    } else {
+                        self.insn_dst(bcx, &insn)
+                    };
+                    let rhs = match (is_reg, is_32) {
+                        (true, false) => self.insn_src(bcx, &insn),
+                        (true, true) => self.insn_src32(bcx, &insn),
+                        (false, false) => self.insn_imm64(bcx, &insn),
+                        (false, true) => self.insn_imm32(bcx, &insn),
+                    };
+
+                    let cmp_res = if (insn.opc & BPF_ALU_OP_MASK) == BPF_JSET {
+                        bcx.ins().band(lhs, rhs)
+                    } else {
+                        bcx.ins().icmp(intcc, lhs, rhs)
+                    };
+                    bcx.ins().brif(cmp_res, target, &[], fallthrough, &[]);
+                    self.filled_blocks.insert(bcx.current_block().unwrap());
+                }
 
                 // Do not delegate the check to the verifier, since registered functions can be
                 // changed after the program has been verified.
@@ -947,7 +968,7 @@ impl CraneliftCompiler {
     }
 
     fn reg_load(&mut self, bcx: &mut FunctionBuilder, ty: Type, base: Value, offset: i16) -> Value {
-        self.insert_bounds_check(bcx, ty, base, offset);
+        // self.insert_bounds_check(bcx, ty, base, offset);
 
         let mut flags = MemFlags::new();
         flags.set_endianness(Endianness::Little);
@@ -962,12 +983,37 @@ impl CraneliftCompiler {
         offset: i16,
         val: Value,
     ) {
-        self.insert_bounds_check(bcx, ty, base, offset);
+        // self.insert_bounds_check(bcx, ty, base, offset);
 
         let mut flags = MemFlags::new();
         flags.set_endianness(Endianness::Little);
 
         bcx.ins().store(flags, val, base, offset as i32);
+    }
+
+    fn prepare_jump_blocks(
+        &mut self,
+        bcx: &mut FunctionBuilder,
+        insn_ptr: usize,
+        insn: &Insn,
+    ) -> (Block, Block) {
+        let target_pc: u32 = (insn_ptr as isize + insn.off as isize + 1)
+            .try_into()
+            .unwrap();
+
+        // This is the fallthrough block
+        let fallthrough_block = *self
+            .insn_blocks
+            .entry((insn_ptr + 1) as u32)
+            .or_insert_with(|| bcx.create_block());
+
+        // Jump Target
+        let target_block = *self
+            .insn_blocks
+            .entry(target_pc)
+            .or_insert_with(|| bcx.create_block());
+
+        (fallthrough_block, target_block)
     }
 
     fn insert_bounds_check(
