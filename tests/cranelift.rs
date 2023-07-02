@@ -346,17 +346,16 @@ test_cranelift!(
     0x300000000
 );
 
-// TODO: FIX THIS
-// test_cranelift!(
-//     test_cranelift_early_exit,
-//     "
-//     mov r0, 3
-//     exit
-//     mov r0, 4
-//     exit
-//     ",
-//     0x3
-// );
+test_cranelift!(
+    test_cranelift_early_exit,
+    "
+    mov r0, 3
+    exit
+    mov r0, 4
+    exit
+    ",
+    0x3
+);
 
 // test_cranelift!(
 //     // #[should_panic(expected = "[JIT] Error: unknown helper function (id: 0x3f)")]
