@@ -189,7 +189,7 @@ impl CraneliftCompiler {
         bcx.declare_var(self.stack_end, I64);
 
         // Set the first 5 arguments to the registers
-        // The eBPF ABI specifies that the first 5 arguments are availabe in
+        // The eBPF ABI specifies that the first 5 arguments are available in
         // registers r1-r5
         for i in 0..5 {
             let arg = bcx.block_params(entry)[i];
@@ -1004,6 +1004,10 @@ impl CraneliftCompiler {
         bcx.ins().store(flags, val, base, offset as i32);
     }
 
+    /// Inserts a bounds check for a memory access
+    ///
+    /// This emits a conditional trap if the access is out of bounds for any of the known
+    /// valid memory regions. These are the stack, the memory, and the mbuf.
     fn insert_bounds_check(
         &mut self,
         bcx: &mut FunctionBuilder,
