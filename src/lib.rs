@@ -1371,6 +1371,7 @@ impl<'a> EbpfVmNoData<'a> {
         self.parent.execute_program_jit(&mut [])
     }
 
+    #[cfg(feature = "cranelift")]
     pub fn execute_cranelift(&self) -> Result<u64, Error> {
         self.parent.execute_cranelift(&mut [])
     }
