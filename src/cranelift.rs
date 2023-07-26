@@ -148,9 +148,7 @@ impl CraneliftCompiler {
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
 
-            println!("Before buildcfg");
             self.build_cfg(&mut builder, prog)?;
-            println!("After buildcfg");
             self.build_function_prelude(&mut builder, entry)?;
             self.translate_program(&mut builder, prog)?;
 
@@ -158,12 +156,12 @@ impl CraneliftCompiler {
             builder.finalize();
         }
 
-        println!("Before Opts: {}", ctx.func.display());
+        // println!("Before Opts: {}", ctx.func.display());
 
         ctx.verify(&*self.isa).unwrap();
         ctx.optimize(&*self.isa).unwrap();
 
-        println!("After Opts: {}", ctx.func.display());
+        // println!("After Opts: {}", ctx.func.display());
 
         self.module.define_function(func_id, &mut ctx).unwrap();
         self.module.finalize_definitions().unwrap();
