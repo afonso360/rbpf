@@ -4,7 +4,7 @@ on:
   pull_request: {}
   push:
     branches:
-      - main
+      - cranelift-jit-2
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.after }}
