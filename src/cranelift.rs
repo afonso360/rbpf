@@ -21,7 +21,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::ebpf::{
     self, Insn, BPF_ALU_OP_MASK, BPF_JEQ, BPF_JGE, BPF_JGT, BPF_JLE, BPF_JLT, BPF_JMP32, BPF_JNE,
-    BPF_JSET, BPF_JSGE, BPF_JSGT, BPF_JSLE, BPF_JSLT, BPF_X, JEQ_REG, STACK_SIZE,
+    BPF_JSET, BPF_JSGE, BPF_JSGT, BPF_JSLE, BPF_JSLT, BPF_X, STACK_SIZE,
 };
 
 use super::Error;

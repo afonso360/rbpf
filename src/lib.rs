@@ -22,6 +22,17 @@ extern crate byteorder;
 extern crate combine;
 extern crate time;
 
+#[cfg(feature = "cranelift")]
+extern crate cranelift_codegen;
+#[cfg(feature = "cranelift")]
+extern crate cranelift_frontend;
+#[cfg(feature = "cranelift")]
+extern crate cranelift_jit;
+#[cfg(feature = "cranelift")]
+extern crate cranelift_module;
+#[cfg(feature = "cranelift")]
+extern crate cranelift_native;
+
 use std::u32;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
@@ -36,6 +47,8 @@ mod asm_parser;
 mod interpreter;
 #[cfg(not(windows))]
 mod jit;
+#[cfg(feature = "cranelift")]
+mod cranelift;
 mod verifier;
 
 /// eBPF verification function that returns an error if the program does not meet its requirements.
@@ -98,6 +111,8 @@ pub struct EbpfVmMbuff<'a> {
     verifier: Verifier,
     #[cfg(not(windows))]
     jit:      Option<jit::JitMemory<'a>>,
+    #[cfg(feature = "cranelift")]
+    cranelift_prog: Option<cranelift::CraneliftProgram>,
     helpers:  HashMap<u32, ebpf::Helper>,
 }
 
@@ -128,6 +143,8 @@ impl<'a> EbpfVmMbuff<'a> {
             verifier: verifier::check,
             #[cfg(not(windows))]
             jit:      None,
+            #[cfg(feature = "cranelift")]
+            cranelift_prog: None,
             helpers:  HashMap::new(),
         })
     }
@@ -373,6 +390,108 @@ impl<'a> EbpfVmMbuff<'a> {
             Some(jit) => Ok(jit.get_prog()(mbuff.as_ptr() as *mut u8, mbuff.len(), mem_ptr, mem.len(), 0, 0)),
             None => Err(Error::new(ErrorKind::Other,
                         "Error: program has not been JIT-compiled")),
+        }
+    }
+
+    /// Compile the loaded program using the Cranelift JIT.
+    ///
+    /// If using helper functions, be sure to register them into the VM before calling this
+    /// function.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let prog = &[
+    ///     0x79, 0x11, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // Load mem from mbuff into R1.
+    ///     0x69, 0x10, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, // ldhx r1[2], r0
+    ///     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // exit
+    /// ];
+    ///
+    /// // Instantiate a VM.
+    /// let mut vm = rbpf::EbpfVmMbuff::new(Some(prog)).unwrap();
+    ///
+    /// vm.cranelift_compile();
+    /// ```
+    #[cfg(feature = "cranelift")]
+    pub fn cranelift_compile(&mut self) -> Result<(), Error> {
+        use crate::cranelift::CraneliftCompiler;
+
+        let prog = match self.prog {
+            Some(prog) => prog,
+            None => Err(Error::new(ErrorKind::Other, "Error: No program set, call prog_set() to load one"))?,
+        };
+
+        let mut compiler = CraneliftCompiler::new(self.helpers.clone());
+        let program = compiler.compile_function(prog)?;
+
+        self.cranelift_prog = Some(program);
+        Ok(())
+    }
+
+    /// Execute the previously compiled program, with the given packet data and metadata
+    /// buffer, in a manner very similar to `execute_program()`.
+    ///
+    /// If the program is made to be compatible with Linux kernel, it is expected to load the
+    /// address of the beginning and of the end of the memory area used for packet data from the
+    /// metadata buffer, at some appointed offsets. It is up to the user to ensure that these
+    /// pointers are correctly stored in the buffer.
+    ///
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let prog = &[
+    ///     0x79, 0x11, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // Load mem from mbuff into r1.
+    ///     0x69, 0x10, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, // ldhx r1[2], r0
+    ///     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // exit
+    /// ];
+    /// let mem = &mut [
+    ///     0xaa, 0xbb, 0x11, 0x22, 0xcc, 0xdd
+    /// ];
+    ///
+    /// // Just for the example we create our metadata buffer from scratch, and we store the
+    /// // pointers to packet data start and end in it.
+    /// let mut mbuff = [0u8; 32];
+    /// unsafe {
+    ///     let mut data     = mbuff.as_ptr().offset(8)  as *mut u64;
+    ///     let mut data_end = mbuff.as_ptr().offset(24) as *mut u64;
+    ///     *data     = mem.as_ptr() as u64;
+    ///     *data_end = mem.as_ptr() as u64 + mem.len() as u64;
+    /// }
+    ///
+    /// // Instantiate a VM.
+    /// let mut vm = rbpf::EbpfVmMbuff::new(Some(prog)).unwrap();
+    ///
+    /// vm.cranelift_compile();
+    ///
+    /// // Provide both a reference to the packet data, and to the metadata buffer.
+    /// let res = vm.execute_program_cranelift(mem, &mut mbuff).unwrap();
+    /// assert_eq!(res, 0x2211);
+    /// ```
+    #[cfg(feature = "cranelift")]
+    pub fn execute_program_cranelift(&self, mem: &mut [u8], mbuff: &'a mut [u8]) -> Result<u64, Error> {
+        // If packet data is empty, do not send the address of an empty slice; send a null pointer
+        //  as first argument instead, as this is uBPF's behavior (empty packet should not happen
+        //  in the kernel; anyway the verifier would prevent the use of uninitialized registers).
+        //  See `mul_loop` test.
+        let mem_ptr = match mem.len() {
+            0 => std::ptr::null_mut(),
+            _ => mem.as_ptr() as *mut u8
+        };
+
+        // The last two arguments are not used in this function. They would be used if there was a
+        // need to indicate to the JIT at which offset in the mbuff mem_ptr and mem_ptr + mem.len()
+        // should be stored; this is what happens with struct EbpfVmFixedMbuff.
+        match &self.cranelift_prog {
+            Some(prog) => Ok(prog.execute(
+                mem_ptr,
+                mem.len(),
+                mbuff.as_ptr() as *mut u8,
+                mbuff.len(),
+                0,
+                0
+            )),
+            None => Err(Error::new(ErrorKind::Other, "Error: program has not been compiled with cranelift")),
         }
     }
 }
@@ -752,6 +871,103 @@ impl<'a> EbpfVmFixedMbuff<'a> {
                                    "Error: program has not been JIT-compiled"))
         }
     }
+
+    /// Compile the loaded program using the Cranelift JIT.
+    ///
+    /// If using helper functions, be sure to register them into the VM before calling this
+    /// function.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let prog = &[
+    ///     0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+    ///     0x79, 0x12, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, // load mem from r1[0x40] to r2
+    ///     0x07, 0x02, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, // add r2, 5
+    ///     0x79, 0x11, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, // load mem_end from r1[0x50] to r1
+    ///     0x2d, 0x12, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, // if r2 > r1 skip 3 instructions
+    ///     0x71, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // load r2 (= *(mem + 5)) into r0
+    ///     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // exit
+    /// ];
+    ///
+    /// // Instantiate a VM. Note that we provide the start and end offsets for mem pointers.
+    /// let mut vm = rbpf::EbpfVmFixedMbuff::new(Some(prog), 0x40, 0x50).unwrap();
+    ///
+    /// vm.cranelift_compile();
+    /// ```
+    #[cfg(feature = "cranelift")]
+    pub fn cranelift_compile(&mut self) -> Result<(), Error> {
+        use crate::cranelift::CraneliftCompiler;
+
+        let prog = match self.parent.prog {
+            Some(prog) => prog,
+            None => Err(Error::new(ErrorKind::Other, "Error: No program set, call prog_set() to load one"))?,
+        };
+
+        let mut compiler = CraneliftCompiler::new(self.parent.helpers.clone());
+        let program = compiler.compile_function(prog)?;
+
+        self.parent.cranelift_prog = Some(program);
+        Ok(())
+    }
+
+    /// Execute the previously compiled program, with the given packet data and metadata
+    /// buffer, in a manner very similar to `execute_program()`.
+    ///
+    /// If the program is made to be compatible with Linux kernel, it is expected to load the
+    /// address of the beginning and of the end of the memory area used for packet data from some
+    /// metadata buffer, which in the case of this VM is handled internally. The offsets at which
+    /// the addresses should be placed should have be set at the creation of the VM.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let prog = &[
+    ///     0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, 0
+    ///     0x79, 0x12, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, // load mem from r1[0x40] to r2
+    ///     0x07, 0x02, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, // add r2, 5
+    ///     0x79, 0x11, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, // load mem_end from r1[0x50] to r1
+    ///     0x2d, 0x12, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, // if r2 > r1 skip 3 instructions
+    ///     0x71, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // load r2 (= *(mem + 5)) into r0
+    ///     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // exit
+    /// ];
+    /// let mem = &mut [
+    ///     0xaa, 0xbb, 0x11, 0x22, 0xcc, 0xdd
+    /// ];
+    ///
+    /// // Instantiate a VM. Note that we provide the start and end offsets for mem pointers.
+    /// let mut vm = rbpf::EbpfVmFixedMbuff::new(Some(prog), 0x40, 0x50).unwrap();
+    ///
+    /// vm.cranelift_compile();
+    ///
+    /// // Provide only a reference to the packet data. We do not manage the metadata buffer.
+    /// let res = vm.execute_program_cranelift(mem).unwrap();
+    /// assert_eq!(res, 0xdd);
+    /// ```
+    #[cfg(feature = "cranelift")]
+    pub fn execute_program_cranelift(&mut self, mem: &'a mut [u8]) -> Result<u64, Error> {
+        // If packet data is empty, do not send the address of an empty slice; send a null pointer
+        //  as first argument instead, as this is uBPF's behavior (empty packet should not happen
+        //  in the kernel; anyway the verifier would prevent the use of uninitialized registers).
+        //  See `mul_loop` test.
+        let mem_ptr = match mem.len() {
+            0 => std::ptr::null_mut(),
+            _ => mem.as_ptr() as *mut u8
+        };
+
+        match &self.parent.cranelift_prog {
+            Some(prog) => Ok(prog.execute(
+                mem_ptr,
+                mem.len(),
+                self.mbuff.buffer.as_ptr() as *mut u8,
+                self.mbuff.buffer.len(),
+                self.mbuff.data_offset,
+                self.mbuff.data_end_offset
+            )),
+            None => Err(Error::new(ErrorKind::Other, "Error: program has not been compiled with cranelift")),
+        }
+    }
+
 }
 
 /// A virtual machine to run eBPF program. This kind of VM is used for programs expecting to work
@@ -1007,6 +1223,72 @@ impl<'a> EbpfVmRaw<'a> {
         let mut mbuff = vec![];
         self.parent.execute_program_jit(mem, &mut mbuff)
     }
+
+    /// Compile the loaded program using the Cranelift JIT.
+    ///
+    /// If using helper functions, be sure to register them into the VM before calling this
+    /// function.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let prog = &[
+    ///     0x71, 0x11, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, // ldxb r1[0x04], r1
+    ///     0x07, 0x01, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, // add r1, 0x22
+    ///     0xbf, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, r1
+    ///     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // exit
+    /// ];
+    ///
+    /// let mut vm = rbpf::EbpfVmRaw::new(Some(prog)).unwrap();
+    ///
+    /// vm.cranelift_compile();
+    /// ```
+    #[cfg(feature = "cranelift")]
+    pub fn cranelift_compile(&mut self) -> Result<(), Error> {
+        use crate::cranelift::CraneliftCompiler;
+
+        let prog = match self.parent.prog {
+            Some(prog) => prog,
+            None => Err(Error::new(ErrorKind::Other,
+                        "Error: No program set, call prog_set() to load one"))?,
+        };
+
+        let mut compiler = CraneliftCompiler::new(self.parent.helpers.clone());
+        let program = compiler.compile_function(prog)?;
+
+        self.parent.cranelift_prog = Some(program);
+        Ok(())
+    }
+
+    /// Execute the previously compiled program, with the given packet data, in a manner very
+    /// similar to `execute_program()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let prog = &[
+    ///     0x71, 0x11, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, // ldxb r1[0x04], r1
+    ///     0x07, 0x01, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, // add r1, 0x22
+    ///     0xbf, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov r0, r1
+    ///     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // exit
+    /// ];
+    ///
+    /// let mem = &mut [
+    ///     0xaa, 0xbb, 0x11, 0x22, 0xcc, 0x27
+    /// ];
+    ///
+    /// let mut vm = rbpf::EbpfVmRaw::new(Some(prog)).unwrap();
+    ///
+    /// vm.cranelift_compile();
+    ///
+    /// let res = vm.execute_program_cranelift(mem).unwrap();
+    /// assert_eq!(res, 0x22cc);
+    /// ```
+    #[cfg(feature = "cranelift")]
+    pub fn execute_program_cranelift(&self, mem: &'a mut [u8]) -> Result<u64, Error> {
+        let mut mbuff = vec![];
+        self.parent.execute_program_cranelift(mem, &mut mbuff)
+    }
 }
 
 /// A virtual machine to run eBPF program. This kind of VM is used for programs that do not work
@@ -1254,5 +1536,53 @@ impl<'a> EbpfVmNoData<'a> {
     #[cfg(not(windows))]
     pub unsafe fn execute_program_jit(&self) -> Result<u64, Error> {
         self.parent.execute_program_jit(&mut [])
+    }
+
+    /// Compile the loaded program using the Cranelift JIT.
+    ///
+    /// If using helper functions, be sure to register them into the VM before calling this
+    /// function.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let prog = &[
+    ///     0xb7, 0x00, 0x00, 0x00, 0x11, 0x22, 0x00, 0x00, // mov r0, 0x2211
+    ///     0xdc, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, // be16 r0
+    ///     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // exit
+    /// ];
+    ///
+    /// let mut vm = rbpf::EbpfVmNoData::new(Some(prog)).unwrap();
+    ///
+    ///
+    /// vm.cranelift_compile();
+    /// ```
+    #[cfg(feature = "cranelift")]
+    pub fn cranelift_compile(&mut self) -> Result<(), Error> {
+        self.parent.cranelift_compile()
+    }
+
+    /// Execute the previously JIT-compiled program, without providing pointers to any memory area
+    /// whatsoever, in a manner very similar to `execute_program()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let prog = &[
+    ///     0xb7, 0x00, 0x00, 0x00, 0x11, 0x22, 0x00, 0x00, // mov r0, 0x2211
+    ///     0xdc, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, // be16 r0
+    ///     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // exit
+    /// ];
+    ///
+    /// let mut vm = rbpf::EbpfVmNoData::new(Some(prog)).unwrap();
+    ///
+    /// vm.cranelift_compile();
+    ///
+    /// let res = vm.execute_program_cranelift().unwrap();
+    /// assert_eq!(res, 0x1122);
+    /// ```
+    #[cfg(feature = "cranelift")]
+    pub fn execute_program_cranelift(&self) -> Result<u64, Error> {
+        self.parent.execute_program_cranelift(&mut [])
     }
 }
